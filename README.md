@@ -8,6 +8,8 @@
 |-------|------|
 | **skill-installer** | Skills 安装器，将本地 Git 仓库中的 skills 通过符号链接安装到 `~/.agents/skills`，自动同步到多个 AI 编程工具 |
 | **requirements-delivery** | 需求交付工作流，从需求文档启动可重复的开发流程，生成系统分析、开发清单、测试计划，并保持文档与代码同步 |
+| **epaas-open-target** | ePaaS 开放对象开发指南，覆盖开放对象接入、权限判断、同步过账、Hook 通知和 SQL 查询 |
+| **html2vue** | HTML 原型高保真 Vue 开发约束，要求复用原 DOM/class/CSS 并通过浏览器视觉检查确保页面一致 |
 
 ## 快速安装
 
@@ -44,7 +46,7 @@ dev-skills/
 │   │   └── scripts/
 │   │       ├── install.ps1       # Windows 安装脚本
 │   │       └── install.sh        # macOS/Linux 安装脚本
-│   └── requirements-delivery/
+│   ├── requirements-delivery/
 │       ├── SKILL.md              # Skill 定义
 │       ├── scripts/
 │       │   ├── check-superpowers.ps1  # 检查 superpowers 状态
@@ -53,6 +55,15 @@ dev-skills/
 │       │   └── openai.yaml       # OpenAI Agent 配置
 │       └── references/
 │           └── peil-practice-only-case.md  # 使用案例参考
+│   └── epaas-open-target/
+│       ├── SKILL.md              # 开放对象机制开发指南
+│       ├── agents/
+│       │   └── openai.yaml       # OpenAI Agent 配置
+│       └── references/
+│           ├── platform-open-target.md  # 平台机制与源码事实
+│           └── peil-patterns.md         # 当前项目开放对象应用模式
+│   └── html2vue/
+│       └── SKILL.md              # HTML 原型高保真 Vue 开发约束
 └── .claude/
     └ settings.local.json        # Claude Code 本地配置
 ```
@@ -100,6 +111,28 @@ dev-skills/
 - Claude Code: `/plugin install superpowers@claude-plugins-official`
 - Cursor: `/add-plugin superpowers`
 - Gemini CLI: `gemini extensions install https://github.com/obra/superpowers`
+
+### epaas-open-target
+
+沉淀 ePaaS 开放对象机制的项目化开发经验，覆盖 `OpenTargetProvide`、`OpenTargetNotifyHook`、`p_base_open_target`、`p_base_open_target_auth`、开放对象同步过账表、权限判断和复杂列表 SQL 下推。
+
+**核心特性：**
+- 明确 `openType` 是开放对象逻辑字段名，不默认等同业务表物理列
+- 记录 V4 RDS 开放对象的主表、授权明细表、`OpenTargetOption` 和平台缺省语义
+- 提供开放对象过账到业务结果表的设计规则，避免列表权限 N+1
+- 收录 `exe-cloud-apps-peil` 当前 `open_to -> p_peil_task_member` 和 `data_board_viewers -> p_peil_task_manege_member` 两类应用模式
+- 指导复杂查询场景联合使用 `sql-template`、`datarecord`、`epaas-server`
+
+### html2vue
+
+用于用户提供 HTML 源码、静态 HTML 页面或可运行 HTML 原型，并要求开发 Vue 页面时保持布局、配色、字号、间距、DOM 结构、class 命名和视觉效果高保真一致。
+
+**核心特性：**
+- 优先复用原 HTML 的 DOM 结构、class 命名、CSS 变量、选择器和视觉语义
+- 支持 Vue 2、Vue 3、SFC、Composition API、Options API、TSX/JSX 或项目既有 Vue 写法
+- 允许按项目设计模式拆分组件、接入数据、路由、接口和 i18n，但最终渲染结构和视觉表现必须与原型一致
+- 禁止随意改动 spacing、font、color、line-height、border、radius、shadow、宽高、布局方式和 DOM 层级
+- 要求逐模块比对截图与 DOM，并在交付前强制完成浏览器视觉检查
 
 ## 更新 Skills
 
