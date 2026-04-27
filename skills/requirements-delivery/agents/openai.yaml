@@ -1,0 +1,4 @@
+interface:
+  display_name: "Requirements Delivery"
+  short_description: "Requirement doc to delivery workflow"
+  default_prompt: "Use $requirements-delivery to turn this requirement document into an analysis, revision-aware task execution, and implementation workflow. If the user updates the analysis, propagate those changes into downstream tasks and plans before continuing."
