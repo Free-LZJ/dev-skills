@@ -24,7 +24,7 @@ Under `doc/<工单号>/` or the user-specified directory, prefer these files:
 | `系统分析.md` | 权威设计与分析基线 | 背景目标、现状分析、差异分析、详细实现设计、影响范围、风险与假设 |
 | `开发清单.md` | 权威任务与状态基线 | 最小粒度 Task、验收口径、阶段化状态、审查内容、验证证据索引 |
 | `测试计划.md` | 权威验证基线 | 验证范围、测试场景、测试数据、预期结果、执行记录、遗留风险 |
-| `过程记录.md` | 人工审计与历史流水 | 变更记录、Bug 修复记录、复盘记录、历史实现迁移记录；默认不作为实现上下文读取 |
+| `过程记录.md` | 人工审计与历史流水 | 变更记录、Bug 修复记录、复盘记录、审计明细、历史实现迁移记录；默认不作为实现上下文读取 |
 
 Use a single-file layout only when the user explicitly prefers it or the work is too small to justify splitting.
 
@@ -38,7 +38,7 @@ Keep cross-file consistency strict:
 - `系统分析.md` owns design intent and implementation description
 - `开发清单.md` owns task decomposition, execution state, and review state
 - `测试计划.md` owns validation scope, verification cases, and execution results
-- `过程记录.md` owns long-form change history and bug history for humans
+- `过程记录.md` owns long-form change history, bug history, audit details, and review history for humans
 - When one file changes a conclusion that affects the others, sync the downstream files before continuing implementation
 
 Prefer tables whenever the information is naturally structured.
@@ -311,7 +311,7 @@ Prefer the default active-context layout plus a separate process archive:
 | `系统分析.md` | 背景目标 / 现状 / 差异分析 / 实现方案 / 影响范围 / 风险与假设 | 放设计与分析，不放执行流水账 |
 | `开发清单.md` | Task 列表 / Task 详情 / 阶段化状态 / 审查内容 / 验证证据索引 | 放最小粒度任务和执行状态，不放长篇变更流水 |
 | `测试计划.md` | 测试范围 / 测试场景 / 测试数据 / 预期结果 / 执行结果 / 遗留风险 | 放验证计划和执行记录 |
-| `过程记录.md` | 变更记录 / Bug 修复记录 / 复盘记录 / 历史实现记录 | 给人看和审计用，默认不参与实现上下文 |
+| `过程记录.md` | 变更记录 / Bug 修复记录 / 审计明细 / 复盘记录 / 历史实现记录 | 给人看和审计用，默认不参与实现上下文 |
 
 Use tables by default when content is tabular or comparative.
 Prefer tables for:
@@ -368,6 +368,35 @@ Then, for each task section in `开发清单.md`, prefer this structure:
 - 验证证据
 - 过程记录索引（如确需引用）
 
+Keep review content split by context value:
+
+| 内容 | 默认位置 | 规则 |
+|------|------|------|
+| 当前审查门禁 / 当前检查项 | `开发清单.md` | 必须保留，供后续实现和联调继续执行 |
+| 当前审查结论摘要 | `开发清单.md` | 只写 `通过 / 待整改 / 阻塞`、一句当前结论和证据链接 |
+| 详细审计过程 | `过程记录.md` | 默认迁出，不参与恢复上下文 |
+| 多轮审查记录 | `过程记录.md` | 默认迁出，开发清单只留最新结论和索引 |
+| 逃逸缺陷、复盘、责任归因 | `过程记录.md` | 默认迁出；当前影响点同步到 `当前上下文.md` 或审查门禁 |
+| 测试命令和执行结果 | `测试计划.md` | 开发清单只引用执行记录，不复制长命令流水 |
+
+In `开发清单.md`, write review blocks in this compact form by default:
+
+```markdown
+**审查内容**
+
+| 检查项 | 当前要求 |
+|------|------|
+| 分页实现 | 不得全量查询后 Java paginate |
+
+**审查结果**
+
+| 当前结论 | 证据 | 过程记录 |
+|------|------|------|
+| 已通过 / 待整改 / 阻塞 | `测试计划.md#执行记录` | `过程记录.md#...` |
+```
+
+Do not keep long audit tables, repeated historical review rows, root-cause narratives, or full command histories inside `开发清单.md`.
+
 For `阶段化状态`, prefer a table rather than a single broad `已完成`:
 
 | 阶段 | 状态 | 证据 |
@@ -409,7 +438,7 @@ In `实现描述`, prefer concrete statements such as:
 - 需要借助的工具或 skill，例如 `datarecord`、`epaas-server`、`sql-template`、`superpowers:brainstorming`、`superpowers:writing-plans`
 - 最小验证入口是什么，例如某个接口、某个 Hook、某个 SQL 渲染结果、某个测试类或编译命令
 
-In `过程记录.md`, maintain long-form history. Keep it append-only unless correcting a factual mistake.
+In `过程记录.md`, maintain long-form history and audit detail. Keep it append-only unless correcting a factual mistake.
 
 For `变更记录`, maintain a table for task adjustments (requirement change, design revision, acceptance criteria update, etc.):
 
@@ -436,6 +465,7 @@ Only add long-form `Bug 修复记录` when the user explicitly asks to record a 
 After adding it, update active documents only with the fixed current conclusion, reopened/completed Task state, required regression case, and optional record id.
 
 Review-time findings, escaped defects discovered during implementation, or issues exposed by compile/test/review should be written into `审查内容` / `审查结果` by default instead of automatically creating a long-form `Bug 修复记录`.
+When review content grows beyond current gates and a one-line conclusion, move the detail to `过程记录.md` and leave only the active gate, latest conclusion, verification pointer, and process-record link in `开发清单.md`.
 
 In `变更说明` or adjacent notes, write concrete statements such as:
 
