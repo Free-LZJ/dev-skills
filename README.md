@@ -49,7 +49,8 @@ dev-skills/
 │   ├── requirements-delivery/
 │       ├── SKILL.md              # Skill 定义
 │       ├── scripts/
-│       │   ├── check-superpowers.ps1  # 检查 superpowers 状态
+│       │   ├── check-superpowers.cmd  # Windows 推荐入口，避免嵌套 powershell.exe 宿主错误
+│       │   ├── check-superpowers.ps1  # 直接 PowerShell / pwsh 调用入口
 │       │   ├── check-superpowers.sh
 │       ├── agents/
 │       │   └── openai.yaml       # OpenAI Agent 配置
@@ -111,6 +112,11 @@ dev-skills/
 - Claude Code: `/plugin install superpowers@claude-plugins-official`
 - Cursor: `/add-plugin superpowers`
 - Gemini CLI: `gemini extensions install https://github.com/obra/superpowers`
+
+**Windows 检查脚本说明：**
+- 优先使用 `cmd /c skills\\requirements-delivery\\scripts\\check-superpowers.cmd`
+- `check-superpowers.ps1` 仅建议在当前 PowerShell 会话直接执行，或通过 `pwsh -File` 调用
+- 避免使用嵌套 `powershell.exe -File ...`，部分环境会在脚本启动前报 managed host loading error
 
 ### epaas-open-target
 
