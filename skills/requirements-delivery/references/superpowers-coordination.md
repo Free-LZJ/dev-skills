@@ -2,6 +2,8 @@
 
 当用户明确要求头脑风暴、结构化调试、完成前验证，或需求交付过程确实需要轻量方法支持时，读取本文件。
 
+重要：除非用户明确要求 brainstorm、头脑风暴或使用 `brainstorming` 子技能，否则 requirements-delivery 不主动调用头脑风暴。
+
 ## 职责边界
 
 `requirements-delivery` 负责：
@@ -27,7 +29,7 @@
 
 | 子技能 | 本地位置 | 使用场景 |
 |------|------|------|
-| `brainstorming` | `subskills/superpowers/brainstorming/SKILL.md` | 需求不清、设计探索、用户明确要求 brainstorm |
+| `brainstorming` | `subskills/superpowers/brainstorming/SKILL.md` | 仅用户明确要求 brainstorm / 头脑风暴 / 使用该子技能时读取 |
 | `systematic-debugging` | `subskills/superpowers/systematic-debugging/SKILL.md` | Bug、验证失败、运行异常、根因不清 |
 | `verification-before-completion` | `subskills/superpowers/verification-before-completion/SKILL.md` | 声称完成、修复、通过、可交付前 |
 
@@ -35,16 +37,17 @@
 
 满足任一条件时读取对应子技能：
 
-- 用户明确要求使用。
+- 用户明确要求使用对应子技能。
 - 用户使用 `--brainstorm`、`--debug` 或 `--verify`。
-- 用户要求设计探索、结构化调试支持或完成前验证纪律。
-- 当前需求规模较大，且上述三个子技能之一能明显降低失控风险。
+- 用户要求结构化调试支持或完成前验证纪律。
+
+`brainstorming` 例外：需求不清、设计探索或任务规模大都不能作为自动调用理由；必须有用户明确要求。
 
 ## 阶段映射
 
 | 阶段 | 方法子技能 |
 |------|------------------|
-| 分析前需求不清晰 | `brainstorming` |
+| 用户明确要求头脑风暴 | `brainstorming` |
 | Bug、验证失败或根因不清 | `systematic-debugging` |
 | 完成、修复或交付前 | `verification-before-completion` |
 

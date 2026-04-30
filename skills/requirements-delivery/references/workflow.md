@@ -9,7 +9,8 @@
 | `/analyze <需求来源>` | 从需求来源启动新的系统分析 |
 | `/analyze <需求来源> --from <现有工作文档>` | 从现有工作文档继续，补充新需求 |
 | `/analyze <需求来源> --task <Task编号>` | 针对特定 Task 补充分析 |
-| `/analyze <需求来源> --brainstorm` | 正式分析前按内置 brainstorming 子技能收敛需求 |
+| `/analyze <需求来源> --brainstorm` | 用户显式要求时，正式分析前按内置 `brainstorming` 子技能收敛需求 |
+| `/fast <Task编号> <目标>` 或 `--fast` | fast 模式：最快完成代码，不走子技能，不记录过程文档，只更新开发清单状态 |
 | `/debug <Task编号> <描述>` | 按内置 systematic-debugging 子技能排查根因，并同步工作文档 |
 | `/verify <Task编号>` | 按内置 verification-before-completion 子技能做完成前验证 |
 | `/sync` | 同步当前代码状态到权威工作文档 |
@@ -76,6 +77,21 @@
 6. 运行最小有意义的编译或测试。
 7. 如发现缺陷，先本地修复，再标记完成。
 8. 验证通过后，更新 Task 阶段状态、`测试计划.md` 执行证据和 `当前上下文.md`；长篇审查或 Bug 过程写入 `过程记录.md`。
+
+## Fast 模式
+
+用户明确说 `fast模式`、`--fast`、`快速模式` 或“最快完成代码”时启用。
+
+执行规则：
+
+1. 只读取完成代码所需的最小上下文：仓库规则、`开发清单.md` 活跃 Task、必要代码。
+2. 不调用 `brainstorming`、`systematic-debugging`、`verification-before-completion` 或其他内置方法子技能。
+3. 不走 TDD 流程，不要求先写失败测试。
+4. 不更新 `当前上下文.md`、`系统分析.md`、`测试计划.md`、`过程记录.md`。
+5. 直接实现代码，运行最小有意义验证；为节省时间无法验证时，在最终回复说明。
+6. 只更新 `开发清单.md` 中相关 Task 的阶段状态、当前状态和必要证据。
+
+退出 fast 模式后，恢复默认 requirements-delivery 工作流。
 
 ## 新会话恢复模板
 

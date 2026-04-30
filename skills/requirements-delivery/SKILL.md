@@ -45,6 +45,17 @@ metadata:
 4. 改代码前，保证分析、当前上下文、Task 状态和验证口径一致。
 5. 结论变化时，先同步受影响活跃文档，再继续实现。
 
+## Fast 模式
+
+只有用户明确说 `fast模式`、`--fast`、`快速模式` 或“最快完成代码”时启用。
+
+- 目标：以最快速度完成代码。
+- 不调用任何内置方法子技能。
+- 不走 TDD 流程，不要求先写失败测试。
+- 不记录过程文档，不更新 `当前上下文.md`、`系统分析.md`、`测试计划.md`、`过程记录.md`。
+- 只更新 `开发清单.md` 中相关 Task 的阶段状态、当前状态和必要证据。
+- 仍遵守仓库规则、用户明确要求和代码安全底线；无法验证时在最终回复说明。
+
 ## 硬规则
 
 - 区分文档假设、代码真实状态、已验证的模型/配置真实状态。
@@ -66,6 +77,6 @@ metadata:
 
 内置方法子技能只按需读取：
 
-- `subskills/superpowers/brainstorming/SKILL.md`：需求不清、方案探索或用户明确要求 brainstorm。
+- `subskills/superpowers/brainstorming/SKILL.md`：仅当用户明确要求 brainstorm / 头脑风暴 / 使用该子技能时读取；默认不主动调用。
 - `subskills/superpowers/systematic-debugging/SKILL.md`：Bug、验证失败、运行异常或根因不清。
 - `subskills/superpowers/verification-before-completion/SKILL.md`：声称完成、修复、通过或准备交付前。
