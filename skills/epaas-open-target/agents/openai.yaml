@@ -1,4 +1,0 @@
-interface:
-  display_name: "ePaaS 开放对象"
-  short_description: "开放对象权限、同步过账与SQL查询指南"
-  default_prompt: "Use $epaas-open-target to analyze an ePaaS open target permission, synchronization, or SQL filtering change."
