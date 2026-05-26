@@ -26,10 +26,10 @@ You MUST create a task for each of these items and complete them in order:
 3. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
 4. **Propose 2-3 approaches** — with trade-offs and your recommendation
 5. **Present design** — in sections scaled to their complexity, get user approval after each section
-6. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
-7. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
-8. **User reviews written spec** — ask user to review the spec file before proceeding
-9. **Transition to requirements-delivery** — write the approved design back to `系统分析.md` / `开发清单.md`, then continue under requirements-delivery workflow
+6. **Write analysis output** — when used by requirements-delivery, write verified conclusions to `系统分析.md`; outside requirements-delivery, save the design to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`
+7. **Self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
+8. **User reviews written output** — ask user to review the analysis/design file before proceeding
+9. **Transition to requirements-delivery** — after multi-round validation and user confirmation, write detailed design to `详细设计.md` or a phase-specific detailed design, then derive `开发清单.md`
 
 ## Process Flow
 
@@ -42,7 +42,7 @@ digraph brainstorming {
     "Propose 2-3 approaches" [shape=box];
     "Present design sections" [shape=box];
     "User approves design?" [shape=diamond];
-    "Write design doc" [shape=box];
+    "Write analysis/design output" [shape=box];
     "Spec self-review\n(fix inline)" [shape=box];
     "User reviews spec?" [shape=diamond];
     "Return to requirements-delivery workflow" [shape=doublecircle];
@@ -55,10 +55,10 @@ digraph brainstorming {
     "Propose 2-3 approaches" -> "Present design sections";
     "Present design sections" -> "User approves design?";
     "User approves design?" -> "Present design sections" [label="no, revise"];
-    "User approves design?" -> "Write design doc" [label="yes"];
-    "Write design doc" -> "Spec self-review\n(fix inline)";
+    "User approves design?" -> "Write analysis/design output" [label="yes"];
+    "Write analysis/design output" -> "Spec self-review\n(fix inline)";
     "Spec self-review\n(fix inline)" -> "User reviews spec?";
-    "User reviews spec?" -> "Write design doc" [label="changes requested"];
+    "User reviews spec?" -> "Write analysis/design output" [label="changes requested"];
     "User reviews spec?" -> "Return to requirements-delivery workflow" [label="approved"];
 }
 ```
@@ -108,10 +108,15 @@ digraph brainstorming {
 
 **Documentation:**
 
-- Write the validated design (spec) to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`
-  - (User preferences for spec location override this default)
+- When invoked from requirements-delivery system analysis:
+  - Write validated requirement understanding, option trade-offs, risks, assumptions, and pending questions to `系统分析.md`.
+  - Do not create all downstream documents in the same step. Create `详细设计.md` or phase-specific detailed design only after multi-round validation has converged and the user requests or approves detailed design.
+  - Generate `开发清单.md` only from detailed design; each Task must point to the corresponding detailed design section.
+  - Do not commit unless the user explicitly asks.
+- Outside requirements-delivery, write the validated design (spec) to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`
+  - User preferences for spec location override this default.
 - Use elements-of-style:writing-clearly-and-concisely skill if available
-- Commit the design document to git
+- Commit the design document to git only when the active parent workflow or user request requires a commit.
 
 **Spec Self-Review:**
 After writing the spec document, look at it with fresh eyes:
@@ -124,15 +129,15 @@ After writing the spec document, look at it with fresh eyes:
 Fix any issues inline. No need to re-review — just fix and move on.
 
 **User Review Gate:**
-After the spec review loop passes, ask the user to review the written spec before proceeding:
+After the self-review loop passes, ask the user to review the written output before proceeding:
 
-> "Spec written and committed to `<path>`. Please review it and let me know if you want to make any changes before we start writing out the implementation plan."
+> "Analysis/design written to `<path>`. Please review it and let me know if you want changes before we continue to detailed design or implementation planning."
 
 Wait for the user's response. If they request changes, make them and re-run the spec review loop. Only proceed once the user approves.
 
 **Implementation:**
 
-- Return to the requirements-delivery workflow and update the active analysis, task list, and verification plan.
+- Return to the requirements-delivery workflow and update documents in this order: `系统分析.md`, then `详细设计.md` or phase-specific detailed design after approval, then `开发清单.md`, then verification and process materials as needed.
 - Do NOT invoke deleted superpowers implementation skills. Requirements-delivery is the next step.
 
 ## Key Principles

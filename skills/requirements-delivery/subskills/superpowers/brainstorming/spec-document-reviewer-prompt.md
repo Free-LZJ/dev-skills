@@ -4,15 +4,15 @@ Use this template when dispatching a spec document reviewer subagent.
 
 **Purpose:** Verify the spec is complete, consistent, and ready for implementation planning.
 
-**Dispatch after:** Spec document is written to docs/superpowers/specs/
+**Dispatch after:** Analysis or design output is written. In requirements-delivery, this may be `系统分析.md`, `详细设计.md`, or a phase-specific detailed design; outside that workflow it may be `docs/superpowers/specs/`.
 
 ```
 Task tool (general-purpose):
   description: "Review spec document"
   prompt: |
-    You are a spec document reviewer. Verify this spec is complete and ready for planning.
+    You are an analysis/design document reviewer. Verify this document is complete, consistent, and ready for its next workflow step.
 
-    **Spec to review:** [SPEC_FILE_PATH]
+    **Document to review:** [DOCUMENT_FILE_PATH]
 
     ## What to Check
 
@@ -31,7 +31,7 @@ Task tool (general-purpose):
     interpreted two different ways — those are issues. Minor wording improvements,
     stylistic preferences, and "sections less detailed than others" are not.
 
-    Approve unless there are serious gaps that would lead to a flawed plan.
+    Approve unless there are serious gaps that would lead to flawed analysis, detailed design, or implementation planning.
 
     ## Output Format
 
