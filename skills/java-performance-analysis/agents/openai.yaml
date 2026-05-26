@@ -1,0 +1,4 @@
+interface:
+  display_name: "Java Performance Analysis"
+  short_description: "Analyze Java performance artifacts."
+  default_prompt: "Analyze Java performance artifacts, identify evidence-backed bottlenecks, and propose fixes with verification steps."
