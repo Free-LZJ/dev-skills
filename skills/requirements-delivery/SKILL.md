@@ -60,6 +60,21 @@ metadata:
 - 只更新 `开发清单.md` 中相关 Task 的阶段状态、当前状态和必要证据。
 - 仍遵守仓库规则、用户明确要求和代码安全底线；无法验证时在最终回复说明。
 
+## Super 模式
+
+只有用户明确说 `super模式`、`--super`、`超级模式` 或“严格模式”时启用。
+
+- 目标：强化测试治理、证据闭环和交付可追踪性。
+- 与 fast 模式互斥；如果用户同时要求 fast 和 super，先暂停并要求用户确认优先级。
+- 所有测试相关工作必须使用 `$dev-test`，包括写用例、冒烟、集成/e2e、UI 视觉、bug 回归、bug 验证、修复验证、增量测试、补测试和覆盖矩阵。
+- 测试正文以 `$dev-test` 维护的 `test-governance/` 为权威源：`test-governance/test-cases.md`、`test-governance/reports/`、`test-governance/evidence/` 和 `test-governance/reports/clarifications.md`。
+- requirements-delivery 不单独生成测试手册，不在 `测试计划.md` 中重复编写测试用例、执行步骤、报告正文或证据明细。
+- `测试计划.md` 只作为按需创建的索引型总览；如果需要维护，仅记录测试类型、关联 Task、测试资产路径、执行报告路径、证据路径、当前状态、阻断原因摘要和下一步。
+- 如果项目没有 `测试计划.md`，不因 super 模式强制创建；只有需求恢复、审计、多 Task 汇总或用户明确要求时才创建索引型 `测试计划.md`。
+- `$dev-test` 的真实环境、真实账号、真实服务、真实数据、人工操作证据、UTF-8 和增量落盘约束优先；信息缺失时必须按 `$dev-test` 要求暂停并追问。
+- 使用 `$dev-test` 时可以按测试类型、影响面或跨项目边界开启 sub-agents 并行收集证据或执行独立验证；最终测试资产仍必须统一落到 `$dev-test` 约定的 `test-governance/`，结论由主流程汇总。
+- `开发清单.md` 和 `当前上下文.md` 只记录测试状态、阻断摘要、复验项和 `test-governance/` 路径索引，不复制测试正文。
+
 ## 硬规则
 
 - 区分文档假设、代码真实状态、已验证的模型/配置真实状态。
@@ -84,6 +99,7 @@ metadata:
 - `$epaas-server`：Hook、事件、MQ、定时任务或服务链路。
 - `$datarecord`：查询、计数、EQL、关联路径和数据更新规则。
 - `$sql-template`：SQL 编写、渲染、模板、动态 SQL 或 PostgreSQL 兼容性审查。
+- `$dev-test`：super 模式下所有测试相关工作强制使用；默认由 `test-governance/` 维护测试用例、报告、证据和澄清记录。
 
 内置方法子技能按阶段读取：
 
