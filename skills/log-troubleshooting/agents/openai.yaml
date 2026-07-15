@@ -1,0 +1,4 @@
+interface:
+  display_name: "Log Troubleshooting"
+  short_description: "Diagnose app logs and exceptions"
+  default_prompt: "Investigate this application exception by reading the relevant code, checking local or production logs, and identifying the likely root cause."
