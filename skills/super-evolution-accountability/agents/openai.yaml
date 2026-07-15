@@ -1,0 +1,4 @@
+interface:
+  display_name: "超进化追责"
+  short_description: "严重问题追责错误来源定位测试漏检分析与改进闭环沉淀"
+  default_prompt: "当用户说超进化或指出严重问题时，追溯错误来源、AI责任、漏检原因和改进措施。"
