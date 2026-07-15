@@ -14,6 +14,7 @@ Read this when something looks wrong in the output (rendering, export, layout, e
 | Edges crossing through shapes | Add waypoints, distribute entry/exit points, or increase spacing |
 | Arrowhead overlaps bend | Final edge segment before target must be ≥20px — increase spacing or add waypoints |
 | Iteration loop never ends | After 5 rounds, suggest user open .drawio in draw.io desktop for fine-tuning |
+| Export command not found on Windows | Check non-system installs such as `D:\Program Files\draw.io\draw.io.exe` or `E:\Program Files\draw.io\draw.io.exe`, then set `DRAWIO_CMD` or call the absolute path |
 | Export command not found on macOS | Try full path `/Applications/draw.io.app/Contents/MacOS/draw.io` |
 | Linux: blank/error output headlessly | Prefix command with `xvfb-run -a` |
 | Linux: `--no-sandbox` placed before input file (parsed as filename) | Move `--no-sandbox` to the very end of the command (drawio-desktop#249, #1056) |

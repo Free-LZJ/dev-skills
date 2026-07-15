@@ -48,10 +48,14 @@ drawio --version
 
 # Windows
 "C:\Program Files\draw.io\draw.io.exe" --version
+# Windows, non-system drive example
+"E:\Program Files\draw.io\draw.io.exe" --version
 
 # Linux
 draw.io --version
 ```
+
+On Windows, do not assume draw.io is installed under `C:\Program Files` or on PATH. If the standard command fails, check common fixed drives such as `D:\Program Files\draw.io\draw.io.exe` and `E:\Program Files\draw.io\draw.io.exe`, or set `DRAWIO_CMD` to the absolute executable path before exporting.
 
 Install draw.io desktop if missing:
 - macOS: `brew install --cask drawio` or download from https://github.com/jgraph/drawio-desktop/releases
