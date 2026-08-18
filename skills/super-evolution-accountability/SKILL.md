@@ -3,7 +3,7 @@ name: super-evolution-accountability
 description: 当用户说“超进化”、指出严重问题、逃逸缺陷、SQL/生产运行错误、要求 AI 担责、追责、复盘、永久记忆、改进措施、错误来源或为什么测试/审查漏过时使用。强制追溯系统分析、自定义 skill、插件、会话记忆、本地规则、代码、测试和审查链路中的责任来源，并沉淀可执行改进。
 ---
 
-# 超进化追责
+# 超进化
 
 用于严重问题复盘和责任闭环。触发后不要只修 bug，必须说明问题为什么发生、为什么审查和测试没有拦住，以及哪些持久规则需要更新。
 
@@ -36,16 +36,6 @@ description: 当用户说“超进化”、指出严重问题、逃逸缺陷、S
    - 补能失败的测试，优先让旧错误在测试中可复现或被断言拦截。
    - 更新权威文档、测试计划、开发清单。
    - 更新相关 skill/rule，防止同类问题复发。
-
-## SQL 逃逸缺陷最低标准
-
-遇到 PostgreSQL 类型错误、运行 SQL 报错、SQL-template 逃逸缺陷时，必须检查：
-
-- `varchar = bigint`、`text = bigint`、`timestamp = text` 等运算符不匹配。
-- `UNION ALL` 每列类型是否对齐。
-- `CASE`、`COALESCE`、`NULL` 占位是否显式 cast。
-- PreparedStatement 参数的 Java 类型是否与 SQL 左侧字段匹配。
-- 单测是否只 mock `selectRecordPage(...)` 而没有验证渲染 SQL 和参数类型。
 
 ## 平台能力重复实现逃逸最低标准
 
