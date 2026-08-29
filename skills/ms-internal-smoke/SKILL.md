@@ -1,6 +1,6 @@
 ---
 name: ms-internal-smoke
-description: This skill should be used when executing an internal MeterSphere test plan through the Codex in-app browser, especially when filtering plan cases by name and unexecuted result, validating each case in a local web app, and writing the execution result back.
+description: This skill should be used when executing an internal MeterSphere test plan through the Codex in-app browser, or when using the bundled read-only API client to inventory, filter, and inspect plan cases before browser-based smoke execution.
 ---
 
 # Internal MS Smoke Test
@@ -11,7 +11,57 @@ Execute only the requested MeterSphere test-plan cases against the real signed-i
 
 - Use the Codex in-app browser for all navigation, inspection, UI interaction, screenshots, and local-app verification unless the requester explicitly names another browser.
 - Reuse the existing in-app browser login session. Do not switch to Chrome, a standalone Playwright browser, direct HTTP calls, or guessed API requests as an automatic fallback.
-- If the in-app browser is unavailable or authentication is missing, stop and report the browser/environment block; ask for the required browser state instead of silently changing the test surface.
+- Resolve authentication in this order before declaring an environment block: verify the target page's existing signed-in UI state; reuse any documented, already-provisioned process authentication through its supported client; then, when the requester authorizes it, focus the visible SSO account field and let the browser's native saved-credential autofill complete the normal login form. Never inspect, copy, print, persist, or manually fill passwords, browser cookies, local storage, profiles, or session stores.
+- Confirm authentication by the target application's visible post-login page or a normal authorized response, not by reading a token. If native autofill or the documented authentication path cannot establish that state, stop and report the browser/environment block; ask for the required browser state instead of silently changing the test surface.
+
+## Read-Only API Discovery Layer
+
+Use the bundled `scripts/metersphere_api.py` client only for plan/case inventory and
+pre-discovery. It is a read-only accelerator and does not replace the browser for
+business execution, result classification, screenshots, or MeterSphere write-back.
+
+The client currently targets the endpoints observed in the signed-in plan page:
+
+- `GET /track/test/plan/get/{planId}` for plan metadata.
+- `POST /track/test/plan/case/list/{page}/{size}` for paginated plan cases.
+- `POST /track/case/node/list/plan/{planId}` for the plan module tree.
+- `GET /track/test/plan/case/get/{planCaseId}` for a complete plan-case detail.
+- `GET /track/test/case/comment/list/{caseId}/PLAN` for read-only comments.
+
+Resolve `planId` and `projectId` from the supplied plan URL; do not guess IDs or
+endpoint variants. Re-discover the request in the browser if the deployment changes
+or an endpoint is not confirmed. The list response is expected to expose
+`data.listObject`, `data.itemCount`, and `data.pageCount`; fetch all pages and verify
+the collected count against `itemCount` before using the result. A known snapshot of
+the supplied plan returned 1080 cases (108 pages at 10 per page), but every run must
+read and validate the live count rather than hard-code it.
+
+Example read-only commands (PowerShell):
+
+```powershell
+$plan = 'https://intra-t-ms.exexm.com/#/track/plan/view/c9b9a38b-0e9d-4870-a541-a13992c97f07?projectId=22b75423-85b9-11ee-89bb-02bfeb65d93b'
+python scripts/metersphere_api.py list --plan-url $plan --expected-total 1080 --page-size 100
+python scripts/metersphere_api.py list --plan-url $plan --name-contains '列表' --execution-status Prepare
+python scripts/metersphere_api.py detail --plan-url $plan --plan-case-id <stable-plan-case-id>
+```
+
+The UI's `名称 contains` filter maps to `combine.name = {operator: like, value}`;
+the `未执行` filter maps to `combine.planCaseStatus =
+{operator: in, value: [Prepare]}`. Keep the filter fields in the request body and
+verify the returned count and matching rows. The detail client decodes JSON-string
+step/result fields when possible, so callers can inspect prerequisites, steps,
+expected results, and per-step execution data without scraping rendered HTML.
+
+Supply authentication only through the documented `MS_*` environment variables (or
+an explicitly transient header option when debugging). An existing token may be
+used only through that documented authentication boundary; never extract it from
+browser storage, copy cookies, print header values, persist tokens, or include
+secrets in evidence.
+Use `MS_X_AUTH_TOKEN`, `MS_CSRF_TOKEN`, `MS_PROJECT_ID`, and `MS_WORKSPACE_ID` for
+the observed deployment; `MS_BASE_URL`, `MS_AUTHORIZATION`, and `MS_COOKIE` are
+optional fallbacks for deployments that explicitly expose those authentication modes.
+An unauthenticated API response is an environment/authentication block; do not fall
+back to guessed requests or treat a partial response as a valid plan.
 
 ## Input Contract
 
@@ -19,8 +69,14 @@ Resolve or request:
 
 - MS plan URL, local application URL, and the requested name phrase.
 - Required execution result filter, for example `未执行` or excluding `通过` and `跳过`.
-- Current environment, tenant, and whether creating minimal test data is authorized.
+- Current environment and tenant. Treat an explicit request to execute the selected cases as one-time authorization for the whole selected set: create and retain the minimum missing test data, use the current signed-in account, execute the visible UI flow, write both MeterSphere result fields, and add the required non-passing comments. Do not request per-case or per-action confirmation for these in-scope test operations.
 - Permission policy. When the requester says permissions are not configured, permission cases are `跳过`.
+
+### Execution Authorization Boundary
+
+- Reuse the initial execution request as authorization for every in-scope test-data write and MeterSphere result/comment write-back in the confirmed filter set.
+- Do not pause after a single blocked, failed, or skipped case. Persist its result and evidence, move to the next case, and summarize only after the run or a genuine plan-level environment block.
+- Escalate only when an action would leave the selected test scope, delete material data, change account/tenant permissions, transmit sensitive data, or violate a higher-priority safety policy.
 
 ## Execution Workflow
 
@@ -39,7 +95,7 @@ Use this state machine for each confirmed case:
 read case ID/title
   -> classify permission requirement
   -> inspect prerequisites
-  -> create minimum missing data and read it back
+  -> create minimum missing data, retain it, and read it back
   -> open local application and execute visible UI steps
   -> record expected vs actual result
   -> write both plan-item and case execution result
@@ -53,7 +109,7 @@ Do not click the **下一条用例** button in the upper-right corner of the cas
 
 ### 3. Handle prerequisites and permissions
 
-- Read existing data before creating anything. Create only the minimum data required by the current case through the visible UI, then read it back and record its ID.
+- Read existing data before creating anything. When a case prerequisite is absent, create only the minimum data required by that case through the visible UI, read it back, and record its ID. Retain created test data by default; clean it up only on an explicit requester instruction.
 - When visible UI data is insufficient, use an existing standard API, Skill, MCP tool, or read-only database query to locate valid prerequisite data before creating anything. Use these sources only for prerequisite discovery; execute and classify the functional behavior through the visible local UI.
 - When a selected product matches `0 道题`, prefer the configured read-only PostgreSQL MCP to locate a product, question, knowledge point, and persona combination that satisfies the real matching rules. Fall back to another authorized standard API, Skill, or MCP only when PostgreSQL access is unavailable or cannot represent the prerequisite.
 - Missing data alone, including a page showing `0 条` or `0 道题`, is never a failure or block. Mark `阻塞` only after confirming that the current tenant or organization has no usable prerequisite data and the prerequisite cannot be restored through an authorized setup path, or the feature is incomplete.
@@ -73,7 +129,7 @@ Do not click the **下一条用例** button in the upper-right corner of the cas
 
 ## Environment Blocks and Recovery
 
-Treat missing login, tenant problems, failed MS filtering, local service refusal, browser disconnection, or an unavailable required dependency as a plan-level environment block. Stop the run, preserve the current case ID, and do not mark that case as a functional failure or `阻塞` unless the case itself was already evaluated.
+Treat login as missing only after the Browser Policy authentication recovery steps fail. Tenant problems, failed MS filtering, local service refusal, browser disconnection, unresolved login, or an unavailable required dependency are plan-level environment blocks. Stop the run, preserve the current case ID, and do not mark that case as a functional failure or `阻塞` unless the case itself was already evaluated.
 
 For a recoverable browser locator failure, take a fresh DOM snapshot and rebuild the locator. Use stable `data-*` attributes or accessible names before scoped text. Never use guessed selectors, stale node IDs, coordinate guessing, or bulk submission. Resume by re-filtering `未执行` and checking the saved case ID/result; do not repeat a persisted case.
 
@@ -86,7 +142,7 @@ plan URL / filter phrase / execution-result filter
 environment and tenant (without secrets)
 total confirmed cases / passed / blocked / skipped / failed
 case ID / title / expected / actual / final result / comment / timestamp
-created test-data IDs
+created test-data IDs and explicit cleanup actions
 environment blocks and recovery attempts
 uncovered scope
 ```
