@@ -35,6 +35,10 @@ BEFORE claiming any status or expressing satisfaction:
 5. ONLY THEN: Make the claim
 
 Skip any step = lying, not verifying
+
+### Fresh verification boundary
+
+Run the relevant verification once after the last related code change, and match it to the declared Task scope. Do not rerun the same full build when no related code changed. Intermediate status updates, exploration, and partial checks are not completion claims; a Task gets at most one final audit.
 ```
 
 ## Common Failures
