@@ -1,31 +1,38 @@
 #!/usr/bin/env python3
-"""Read-only MeterSphere test-plan API client.
+"""MeterSphere test-plan discovery and explicit write-back API client.
 
-This module is deliberately limited to plan and case reads.  The browser skill
-still owns functional execution and result write-back; this client only removes
-the slow, fragile list/detail navigation from the discovery part of a smoke
-run.  Callers must provide an authenticated session explicitly through headers
-or the documented ``MS_*`` environment variables.  The client never inspects
-browser storage and never logs header values.
+This module provides plan/case discovery plus explicit single-case write-back.
+The browser skill still owns functional execution; this client removes the slow,
+fragile list/detail navigation and can persist confirmed result/comment payloads.
+Callers may provide authentication through documented ``MS_*`` variables
+or the local auth cache.  The client never inspects browser storage or logs
+header values; it only persists the API auth headers after a successful request.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
+import getpass
 import json
 import math
 import os
 import re
 import sys
+from http.cookiejar import CookieJar
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 
 DEFAULT_PAGE_SIZE = 100
 DEFAULT_MAX_PAGES = 200
+DEFAULT_AUTH_CACHE_NAME = "ms-internal-smoke-auth.json"
+DEFAULT_CREDENTIALS_NAME = "credentials.json"
+AUTHENTICATE_ENDPOINTS = {"LOCAL": "/signin", "LDAP": "/ldap/signin"}
 PLAN_ID_PATTERN = re.compile(r"(?:^|/)plan/view/([^/?#]+)")
 
 # These are the headers injected by the authenticated MeterSphere web client.
@@ -39,6 +46,7 @@ AUTH_HEADER_NAMES = frozenset(
         "x-auth-token",
     }
 )
+CACHEABLE_AUTH_HEADER_NAMES = (AUTH_HEADER_NAMES - {"cookie"}) | {"csrf-token"}
 ENV_HEADER_MAP = {
     "MS_CSRF_TOKEN": "CSRF-TOKEN",
     "MS_X_AUTH_TOKEN": "X-AUTH-TOKEN",
@@ -49,12 +57,81 @@ ENV_HEADER_MAP = {
 }
 
 
+def _read_asn1_length(data: bytes, index: int) -> tuple[int, int]:
+    first = data[index]
+    index += 1
+    if first < 0x80:
+        return first, index
+    count = first & 0x7F
+    if count == 0 or index + count > len(data):
+        raise ValueError("invalid RSA public key")
+    return int.from_bytes(data[index:index + count], "big"), index + count
+
+
+def _parse_rsa_public_key(public_key: str) -> tuple[int, int]:
+    encoded = "".join(
+        line.strip()
+        for line in public_key.splitlines()
+        if line.strip() and not line.startswith("-----")
+    )
+    try:
+        der = base64.b64decode(encoded, validate=True)
+        index = 1
+        _, index = _read_asn1_length(der, index)
+        if der[index] != 0x30:
+            raise ValueError
+        index += 1
+        algorithm_length, index = _read_asn1_length(der, index)
+        index += algorithm_length
+        if der[index] != 0x03:
+            raise ValueError
+        index += 1
+        _, index = _read_asn1_length(der, index)
+        index += 1
+        if der[index] != 0x30:
+            raise ValueError
+        index += 1
+        _, index = _read_asn1_length(der, index)
+        if der[index] != 0x02:
+            raise ValueError
+        index += 1
+        modulus_length, index = _read_asn1_length(der, index)
+        modulus = int.from_bytes(der[index:index + modulus_length], "big")
+        index += modulus_length
+        if der[index] != 0x02:
+            raise ValueError
+        index += 1
+        exponent_length, index = _read_asn1_length(der, index)
+        exponent = int.from_bytes(der[index:index + exponent_length], "big")
+        return modulus, exponent
+    except (IndexError, ValueError) as error:
+        raise ValueError("invalid RSA public key") from error
+
+
+def _encrypt_login_value(value: str, public_key: str) -> str:
+    modulus, exponent = _parse_rsa_public_key(public_key)
+    size = (modulus.bit_length() + 7) // 8
+    message = value.encode("utf-8")
+    if len(message) > size - 11:
+        raise ValueError("MeterSphere login value is too long")
+    padding = bytearray()
+    while len(padding) < size - len(message) - 3:
+        padding.extend(byte for byte in os.urandom(size) if byte)
+    encoded = b"\x00\x02" + bytes(padding[:size - len(message) - 3]) + b"\x00" + message
+    encrypted = pow(int.from_bytes(encoded, "big"), exponent, modulus)
+    return base64.b64encode(encrypted.to_bytes(size, "big")).decode("ascii")
+
+
 class MeterSphereError(RuntimeError):
     """Base class for safe, actionable MeterSphere client errors."""
 
 
 class AuthenticationError(MeterSphereError):
     """Raised before a request when no explicit authentication was supplied."""
+
+
+class AuthenticationExpiredError(MeterSphereError):
+    """Raised after MeterSphere rejects a cached or supplied credential."""
 
 
 class ResponseShapeError(MeterSphereError):
@@ -351,8 +428,98 @@ def decode_detail_fields(value: Any, field_name: str | None = None) -> Any:
     return value
 
 
+def _default_auth_cache_path(environ: Mapping[str, str]) -> Path | None:
+    configured = environ.get("MS_AUTH_CACHE_FILE")
+    if configured:
+        return Path(configured).expanduser()
+    # Tests and callers supplying an explicit environment stay isolated.
+    if environ is not os.environ:
+        return None
+    root = environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(root) / "Codex" / "ms-internal-smoke" / DEFAULT_AUTH_CACHE_NAME
+
+
+def _default_credentials_path(environ: Mapping[str, str]) -> Path | None:
+    configured = environ.get("MS_CREDENTIALS_FILE")
+    if configured:
+        return Path(configured).expanduser()
+    if environ is not os.environ:
+        return None
+    root = environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(root) / "Codex" / "ms-internal-smoke" / DEFAULT_CREDENTIALS_NAME
+
+
+def _credential_origin(base_url: str) -> str:
+    parsed = urlsplit(base_url.rstrip("/"))
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), "", "", ""))
+
+
+def _load_login_credentials(
+    path: Path | None, base_url: str
+) -> tuple[str | None, str | None, str | None]:
+    payload = _load_auth_cache_document(path)
+    origins = payload.get("origins") if isinstance(payload, Mapping) else None
+    entry = origins.get(_credential_origin(base_url)) if isinstance(origins, Mapping) else None
+    if not isinstance(entry, Mapping):
+        return None, None, None
+    username = str(entry.get("username") or "").strip() or None
+    password = str(entry.get("password") or "") or None
+    authenticate = str(entry.get("authenticate") or "").strip().upper() or None
+    return username, password, authenticate
+
+
+def _load_auth_cache_document(path: Path | None) -> Any:
+    if path is None or not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+
+
+def _save_login_credentials(
+    path: Path, base_url: str, username: str, password: str, authenticate: str
+) -> None:
+    payload = _load_auth_cache_document(path)
+    if not isinstance(payload, dict):
+        payload = {}
+    origins = payload.get("origins")
+    if not isinstance(origins, dict):
+        origins = {}
+        payload["origins"] = origins
+    origins[_credential_origin(base_url)] = {
+        "username": username,
+        "password": password,
+        "authenticate": authenticate,
+    }
+    payload["version"] = 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _load_auth_cache(path: Path | None, base_url: str) -> dict[str, str]:
+    if path is None or not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        origins = payload.get("origins") if isinstance(payload, Mapping) else None
+        entry = origins.get(_credential_origin(base_url)) if isinstance(origins, Mapping) else None
+        headers = entry.get("headers") if isinstance(entry, Mapping) else None
+        if not isinstance(headers, Mapping):
+            return {}
+        return {
+            str(name): str(value)
+            for name, value in headers.items()
+            if str(name).casefold() in CACHEABLE_AUTH_HEADER_NAMES and str(value).strip()
+        }
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+
+
 class MeterSphereClient:
-    """Small, read-only HTTP client for the MeterSphere track endpoints."""
+    """Small HTTP client for MeterSphere plan discovery and explicit write-back."""
 
     def __init__(
         self,
@@ -360,6 +527,11 @@ class MeterSphereClient:
         headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,
         opener: Callable[..., Any] | None = None,
+        auth_cache_path: str | os.PathLike[str] | None = None,
+        credentials_path: str | os.PathLike[str] | None = None,
+        username: str | None = None,
+        password: str | None = None,
+        authenticate: str = "LOCAL",
     ) -> None:
         parsed = urlsplit(base_url.rstrip("/"))
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -367,7 +539,12 @@ class MeterSphereClient:
         self.base_url = base_url.rstrip("/")
         self._headers = _normalize_headers(headers or {})
         self.timeout = timeout
-        self._opener = opener or urlopen
+        self._opener = opener or build_opener(HTTPCookieProcessor(CookieJar())).open
+        self._auth_cache_path = Path(auth_cache_path) if auth_cache_path else None
+        self._credentials_path = Path(credentials_path) if credentials_path else None
+        self._username = username
+        self._password = password
+        self._authenticate = self._normalize_authenticate(authenticate)
 
     @classmethod
     def from_environment(
@@ -377,6 +554,8 @@ class MeterSphereClient:
         extra_headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,
         opener: Callable[..., Any] | None = None,
+        auth_cache_path: str | os.PathLike[str] | None = None,
+        credentials_path: str | os.PathLike[str] | None = None,
     ) -> "MeterSphereClient":
         """Construct from explicitly named ``MS_*`` values.
 
@@ -389,13 +568,119 @@ class MeterSphereClient:
         resolved_base_url = base_url or env.get("MS_BASE_URL")
         if not resolved_base_url:
             raise ValueError("base URL is required (argument or MS_BASE_URL)")
-        headers = {
+        headers = _load_auth_cache(
+            Path(auth_cache_path)
+            if auth_cache_path
+            else _default_auth_cache_path(env),
+            resolved_base_url,
+        )
+        headers.update({
             header_name: env[env_name]
             for env_name, header_name in ENV_HEADER_MAP.items()
             if env.get(env_name)
-        }
+        })
         headers.update(extra_headers or {})
-        return cls(resolved_base_url, headers=headers, timeout=timeout, opener=opener)
+        credentials_path_value = (
+            Path(os.fspath(credentials_path))
+            if credentials_path
+            else _default_credentials_path(env)
+        )
+        cached_username, cached_password, cached_authenticate = _load_login_credentials(
+            credentials_path_value, resolved_base_url
+        )
+        return cls(
+            resolved_base_url,
+            headers=headers,
+            timeout=timeout,
+            opener=opener,
+            auth_cache_path=auth_cache_path or _default_auth_cache_path(env),
+            credentials_path=credentials_path_value,
+            username=env.get("MS_USERNAME") or env.get("MS_USER") or cached_username,
+            password=env.get("MS_PASSWORD") or env.get("MS_PASS") or cached_password,
+            authenticate=env.get("MS_AUTHENTICATE") or cached_authenticate or "LOCAL",
+        )
+
+    @staticmethod
+    def _normalize_authenticate(authenticate: str) -> str:
+        value = authenticate.strip().upper()
+        if value not in AUTHENTICATE_ENDPOINTS:
+            raise ValueError("authenticate must be LOCAL or LDAP")
+        return value
+
+    def login(
+        self, username: str, password: str, authenticate: str | None = None
+    ) -> dict[str, Any]:
+        """Login through MeterSphere's form API and refresh the auth cache."""
+
+        authenticate = self._normalize_authenticate(authenticate or self._authenticate)
+        key_response = self._request_public_json("GET", "/is-login")
+        public_key = str(key_response.get("message") or "")
+        if not public_key:
+            raise AuthenticationError("MeterSphere login did not return an RSA public key")
+        login_response = self._request_public_json(
+            "POST",
+            AUTHENTICATE_ENDPOINTS[authenticate],
+            {
+                "username": _encrypt_login_value(username, public_key),
+                "password": _encrypt_login_value(password, public_key),
+                "authenticate": authenticate,
+            },
+        )
+        data = _unwrap_data(login_response)
+        if not isinstance(data, Mapping):
+            raise AuthenticationError("MeterSphere login response has no user data")
+        session_id = str(data.get("sessionId") or "").strip()
+        csrf_token = str(data.get("csrfToken") or "").strip()
+        if not session_id:
+            raise AuthenticationError("MeterSphere login response has no sessionId")
+        self._headers["X-AUTH-TOKEN"] = session_id
+        if csrf_token:
+            self._headers["CSRF-TOKEN"] = csrf_token
+        self._authenticate = authenticate
+        self._save_auth_cache()
+        return dict(data)
+
+    def _request_public_json(
+        self, method: str, path: str, body: Mapping[str, Any] | None = None
+    ) -> Mapping[str, Any]:
+        encoded = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
+        headers = {"Accept": "application/json"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        request = Request(
+            f"{self.base_url}/{path.lstrip('/')}", data=encoded, headers=headers, method=method
+        )
+        try:
+            response = self._opener(request, timeout=self.timeout)
+            payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as error:
+            message = _safe_error_message(error, ())
+            raise AuthenticationError(f"MeterSphere login HTTP {error.code}: {message}") from None
+        except (URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise AuthenticationError("MeterSphere login request failed") from error
+        if not isinstance(payload, Mapping):
+            raise AuthenticationError("MeterSphere login returned invalid JSON")
+        return payload
+
+    def _refresh_auth(self) -> bool:
+        if not self._username or not self._password:
+            return False
+        self.login(self._username, self._password, self._authenticate)
+        return True
+
+    def save_login_credentials(
+        self, username: str, password: str, authenticate: str | None = None
+    ) -> Path:
+        if self._credentials_path is None:
+            raise ValueError("MeterSphere credentials path is unavailable")
+        authenticate = self._normalize_authenticate(authenticate or self._authenticate)
+        _save_login_credentials(
+            self._credentials_path, self.base_url, username, password, authenticate
+        )
+        self._username = username
+        self._password = password
+        self._authenticate = authenticate
+        return self._credentials_path
 
     def get_plan(self, plan_id: str) -> dict[str, Any]:
         """Read one plan and verify its returned ID when present."""
@@ -571,10 +856,110 @@ class MeterSphereClient:
         )
         return _unwrap_data(payload)
 
-    def _request_json(self, method: str, path: str, body: Mapping[str, Any] | None = None) -> Any:
+    def edit_plan_case(self, payload: Mapping[str, Any]) -> Any:
+        """Persist one selective plan-case update from the current API contract."""
+
+        if not isinstance(payload, Mapping) or not str(payload.get("id") or "").strip():
+            raise ValueError("plan-case edit payload requires a stable id")
+        return _unwrap_data(
+            self._request_json("POST", "/track/test/plan/case/edit", dict(payload))
+        )
+
+    def add_case_comment(self, payload: Mapping[str, Any]) -> Any:
+        """Persist one case comment payload from the current UI contract."""
+
+        if not isinstance(payload, Mapping) or not str(payload.get("caseId") or "").strip():
+            raise ValueError("comment payload requires caseId")
+        if not str(payload.get("description") or "").strip():
+            raise ValueError("comment payload requires description")
+        payload = {"type": "PLAN", **payload}
+        return _unwrap_data(
+            self._request_json("POST", "/track/test/case/comment/save", dict(payload))
+        )
+
+    def update_case_by_number(
+        self,
+        plan_id: str,
+        project_id: str,
+        case_number: str,
+        status: str,
+        comment: str | None = None,
+    ) -> dict[str, Any]:
+        """Locate one plan case, update it, and verify the persisted state."""
+
+        number = str(case_number).strip()
+        target_status = status.strip()
+        if not number or not target_status:
+            raise ValueError("case number and status are required")
+        result = self.query_plan_cases(plan_id, project_id)
+        matches = [
+            case for case in result.all_cases
+            if str(_first_value(case, "customNum", "num") or "").strip() == number
+        ]
+        if len(matches) != 1:
+            raise ResponseShapeError(
+                f"case number {number!r} matched {len(matches)} plan cases; expected exactly one"
+            )
+        before = self.get_plan_case(str(matches[0]["id"]))
+        case_id = str(before.get("caseId") or "").strip()
+        if not case_id:
+            raise ResponseShapeError("plan case detail has no base caseId")
+
+        def has_comment(items: Any) -> bool:
+            return isinstance(items, list) and any(
+                item.get("description") == comment
+                and item.get("type") == "PLAN"
+                and item.get("status") == target_status
+                for item in items if isinstance(item, Mapping)
+            )
+
+        already_updated = (
+            before.get("status") == target_status
+            and before.get("lastExecuteResult") == target_status
+        )
+        if already_updated and (not comment or has_comment(self.list_case_comments(case_id))):
+            return {
+                "planCaseId": str(before["id"]),
+                "caseId": case_id,
+                "caseNumber": number,
+                "status": target_status,
+                "commentVerified": True,
+                "updated": False,
+            }
+        payload = {"id": str(before["id"]), "caseId": case_id, "status": target_status}
+        if comment:
+            payload["comment"] = comment
+        self.edit_plan_case(payload)
+        after = self.get_plan_case(str(before["id"]))
+        if after.get("status") != target_status or after.get("lastExecuteResult") != target_status:
+            raise ResponseShapeError("plan case status did not persist consistently")
+        comment_verified = not comment
+        if comment:
+            comment_verified = has_comment(self.list_case_comments(case_id))
+            if not comment_verified:
+                raise ResponseShapeError("plan case comment did not persist")
+        return {
+            "planCaseId": str(before["id"]),
+            "caseId": case_id,
+            "caseNumber": number,
+            "status": target_status,
+            "commentVerified": comment_verified,
+            "updated": True,
+        }
+
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        body: Mapping[str, Any] | None = None,
+        *,
+        allow_refresh: bool = True,
+    ) -> Any:
         """Perform one request while keeping credentials out of diagnostics."""
 
         if not _has_explicit_auth(self._headers):
+            if allow_refresh and self._refresh_auth():
+                return self._request_json(method, path, body, allow_refresh=False)
             raise AuthenticationError(
                 "no explicit authentication header supplied; pass --header or MS_* variables"
             )
@@ -591,6 +976,13 @@ class MeterSphereClient:
             raw = response.read()
         except HTTPError as error:
             message = _safe_error_message(error, self._headers.values())
+            if error.code == 401 or _looks_like_auth_failure(message):
+                self._clear_auth_cache()
+                if allow_refresh and self._refresh_auth():
+                    return self._request_json(method, path, body, allow_refresh=False)
+                raise AuthenticationExpiredError(
+                    "MeterSphere authentication expired; complete browser login and retry"
+                ) from None
             raise MeterSphereError(f"MeterSphere HTTP {error.code} for {method} {path}: {message}") from None
         except URLError as error:
             reason = _redact(str(error.reason), self._headers.values())
@@ -599,6 +991,13 @@ class MeterSphereClient:
             raise MeterSphereError(f"MeterSphere request timed out for {method} {path}") from None
 
         if status < 200 or status >= 300:
+            if status == 401:
+                self._clear_auth_cache()
+                if allow_refresh and self._refresh_auth():
+                    return self._request_json(method, path, body, allow_refresh=False)
+                raise AuthenticationExpiredError(
+                    "MeterSphere authentication expired; complete browser login and retry"
+                )
             raise MeterSphereError(f"MeterSphere HTTP {status} for {method} {path}")
         try:
             payload = json.loads(raw.decode("utf-8"))
@@ -606,13 +1005,58 @@ class MeterSphereClient:
                 # Keep the envelope shape for ``_unwrap_data`` while ensuring
                 # a gateway cannot echo an explicit token into CLI diagnostics.
                 payload = dict(payload)
-                payload["message"] = _redact(
-                    str(payload.get("message") or "MeterSphere returned success=false"),
-                    request_headers.values(),
-                )
+                message = str(payload.get("message") or "MeterSphere returned success=false")
+                payload["message"] = _redact(message, request_headers.values())
+                if _looks_like_auth_failure(message):
+                    self._clear_auth_cache()
+                    if allow_refresh and self._refresh_auth():
+                        return self._request_json(method, path, body, allow_refresh=False)
+                    raise AuthenticationExpiredError(
+                        "MeterSphere authentication expired; complete browser login and retry"
+                    )
+            self._save_auth_cache()
             return payload
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ResponseShapeError(f"MeterSphere returned non-JSON data for {method} {path}") from error
+
+    def _save_auth_cache(self) -> None:
+        if self._auth_cache_path is None:
+            return
+        auth_headers = {
+            name: value
+            for name, value in self._headers.items()
+            if name.casefold() in CACHEABLE_AUTH_HEADER_NAMES and value.strip()
+        }
+        if not auth_headers:
+            return
+        payload = _load_auth_cache_document(self._auth_cache_path)
+        if not isinstance(payload, dict):
+            payload = {}
+        origins = payload.get("origins")
+        if not isinstance(origins, dict):
+            origins = {}
+        origins[_credential_origin(self.base_url)] = {"headers": auth_headers}
+        payload = {"version": 2, "origins": origins}
+        self._auth_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._auth_cache_path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        temporary.replace(self._auth_cache_path)
+
+    def _clear_auth_cache(self) -> None:
+        if self._auth_cache_path is None:
+            return
+        payload = _load_auth_cache_document(self._auth_cache_path)
+        origins = payload.get("origins") if isinstance(payload, Mapping) else None
+        if not isinstance(origins, dict):
+            return
+        origins.pop(_credential_origin(self.base_url), None)
+        self._auth_cache_path.write_text(
+            json.dumps({"version": 2, "origins": origins}, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
 
 def _normalize_headers(headers: Mapping[str, str]) -> dict[str, str]:
@@ -628,6 +1072,14 @@ def _normalize_headers(headers: Mapping[str, str]) -> dict[str, str]:
 
 def _has_explicit_auth(headers: Mapping[str, str]) -> bool:
     return any(name.casefold() in AUTH_HEADER_NAMES and value.strip() for name, value in headers.items())
+
+
+def _looks_like_auth_failure(message: str) -> bool:
+    lowered = message.casefold()
+    return any(
+        marker in lowered
+        for marker in ("unauthorized", "未登录", "认证失败", "登录失效", "token expired", "401")
+    )
 
 
 def _safe_error_message(error: HTTPError, secrets: Iterable[str] = ()) -> str:
@@ -695,7 +1147,7 @@ def _make_client(args: argparse.Namespace) -> tuple[MeterSphereClient, PlanRefer
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Read MeterSphere plans and cases without writing test results")
+    parser = argparse.ArgumentParser(description="Read and explicitly update MeterSphere plan cases")
 
     def add_common_options(target: argparse.ArgumentParser, *, suppress_defaults: bool = False) -> None:
         """Allow connection options before or after the subcommand."""
@@ -729,6 +1181,25 @@ def _build_parser() -> argparse.ArgumentParser:
 
     add_common_options(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    login_parser = subparsers.add_parser("login", help="login and refresh the local auth cache")
+    add_common_options(login_parser, suppress_defaults=True)
+    login_parser.add_argument("--username", help="MeterSphere username, or use MS_USERNAME")
+    login_parser.add_argument(
+        "--authenticate",
+        choices=tuple(AUTHENTICATE_ENDPOINTS),
+        help="login type; defaults to MS_AUTHENTICATE, cached value, or LOCAL",
+    )
+    login_parser.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="read the MeterSphere password from stdin instead of a hidden prompt",
+    )
+    login_parser.add_argument(
+        "--save-credentials",
+        action="store_true",
+        help="cache the username/password locally for this MeterSphere origin",
+    )
 
     plan_parser = subparsers.add_parser("plan", help="read plan details")
     add_common_options(plan_parser, suppress_defaults=True)
@@ -766,11 +1237,50 @@ def _build_parser() -> argparse.ArgumentParser:
     add_common_options(comments_parser, suppress_defaults=True)
     comments_parser.add_argument("case_id", nargs="?")
     comments_parser.add_argument("--case-id", dest="case_id_option")
+    edit_parser = subparsers.add_parser("edit-case", help="write one complete plan-case payload")
+    add_common_options(edit_parser, suppress_defaults=True)
+    edit_parser.add_argument("--payload-json")
+    edit_parser.add_argument("--payload-file")
+    comment_parser = subparsers.add_parser("add-comment", help="write one case comment payload")
+    add_common_options(comment_parser, suppress_defaults=True)
+    comment_parser.add_argument("--payload-json")
+    comment_parser.add_argument("--payload-file")
+    update_parser = subparsers.add_parser(
+        "update-case", help="locate one case by number, update it, and verify persistence"
+    )
+    add_common_options(update_parser, suppress_defaults=True)
+    update_parser.add_argument("--plan-id")
+    update_parser.add_argument("--project-id")
+    update_parser.add_argument("--case-number", required=True)
+    update_parser.add_argument("--status", required=True)
+    update_parser.add_argument("--comment")
     return parser
 
 
 def _run_cli(args: argparse.Namespace) -> Any:
     client, reference = _make_client(args)
+    if args.command == "login":
+        username = args.username or os.environ.get("MS_USERNAME") or os.environ.get("MS_USER")
+        if not username:
+            raise ValueError("MeterSphere username is required (use --username or MS_USERNAME)")
+        if args.password_stdin:
+            password = sys.stdin.readline().rstrip("\r\n")
+        else:
+            password = os.environ.get("MS_PASSWORD") or os.environ.get("MS_PASS")
+            if not password and sys.stdin.isatty():
+                password = getpass.getpass("MeterSphere password: ")
+        if not password:
+            raise ValueError("MeterSphere password is required (use MS_PASSWORD or --password-stdin)")
+        authenticate = args.authenticate or client._authenticate
+        data = client.login(username, password, authenticate)
+        if args.save_credentials:
+            client.save_login_credentials(username, password, authenticate)
+        return {
+            "status": "ok",
+            "userId": data.get("id"),
+            "authCache": "refreshed",
+            "credentialsCached": args.save_credentials,
+        }
     if args.command == "plan":
         plan_id = args.plan_id or (reference.plan_id if reference else None)
         if not plan_id:
@@ -791,6 +1301,19 @@ def _run_cli(args: argparse.Namespace) -> Any:
         if not case_id:
             raise ValueError("base case ID is required (use --case-id or a positional ID)")
         return client.list_case_comments(case_id)
+    if args.command in {"edit-case", "add-comment"}:
+        payload = _load_json_argument(args.payload_json, args.payload_file, "payload")
+        if not isinstance(payload, Mapping):
+            raise ValueError("payload JSON must be an object")
+        return client.edit_plan_case(payload) if args.command == "edit-case" else client.add_case_comment(payload)
+    if args.command == "update-case":
+        plan_id = args.plan_id or (reference.plan_id if reference else None)
+        project_id = args.project_id or (reference.project_id if reference else None) or os.environ.get("MS_PROJECT_ID")
+        if not plan_id or not project_id:
+            raise ValueError("update-case requires planId and projectId from --plan-url or explicit options")
+        return client.update_case_by_number(
+            plan_id, project_id, args.case_number, args.status, args.comment
+        )
 
     plan_id = args.plan_id or (reference.plan_id if reference else None)
     project_id = (

@@ -2,24 +2,35 @@
 """Offline contract tests for :mod:`metersphere_api`.
 
 The fake opener records method, path, headers, and JSON payload but never opens
-the network.  This keeps the tests useful in CI and makes it explicit that the
-client cannot perform a result write-back endpoint by accident.
+the network. This keeps the tests useful in CI while covering explicit
+single-case result and comment write-back without live side effects.
 """
 
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 from unittest.mock import patch
+
+
+PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDvN3bF4NRe6u0s3jsQsjBPZLso
+6Vp0y36C9VSF6/HQSiXSyH+ewAbP5tYHNBnMTcIb3UWMYMU5hasNawIcP0Zy9Gle
+/UWe5LZ6XAbnVneQrhJiYOob3GvHuZ1cjgqC2egYSwwRjUIxXuNdRnAB8jIJB+Fj
+MS1voG4KLz3Fuj8sDQIDAQAB
+-----END PUBLIC KEY-----"""
 
 try:
     from .metersphere_api import (
         AuthenticationError,
         CaseFilter,
         MeterSphereClient,
+        AuthenticationExpiredError,
         PaginationError,
         _build_parser,
         _make_client,
@@ -30,6 +41,7 @@ except ImportError:  # Direct execution from the scripts directory.
         AuthenticationError,
         CaseFilter,
         MeterSphereClient,
+        AuthenticationExpiredError,
         PaginationError,
         _build_parser,
         _make_client,
@@ -55,10 +67,180 @@ class FakeOpener:
         self.requests.append(request)
         if not self.responses:
             raise AssertionError("unexpected extra request")
-        return FakeResponse(self.responses.pop(0))
+        response = self.responses.pop(0)
+        return response if isinstance(response, FakeResponse) else FakeResponse(response)
 
 
 class MeterSphereApiTests(unittest.TestCase):
+    def test_login_encrypts_credentials_and_refreshes_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache_path = Path(directory) / "auth.json"
+            opener = FakeOpener([
+                {"success": False, "message": PUBLIC_KEY},
+                {
+                    "success": True,
+                    "data": {"id": "user-1", "sessionId": "session-1", "csrfToken": "csrf-1"},
+                },
+            ])
+            client = MeterSphereClient(
+                "https://ms.example", opener=opener, auth_cache_path=cache_path
+            )
+
+            result = client.login("account", "password")
+
+            self.assertEqual(result["id"], "user-1")
+            login_request = opener.requests[1]
+            body = json.loads(login_request.data.decode("utf-8"))
+            self.assertEqual(body["authenticate"], "LOCAL")
+            self.assertNotEqual(body["username"], "account")
+            self.assertNotEqual(body["password"], "password")
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))["origins"]["https://ms.example"]["headers"]
+            self.assertEqual(cached["X-AUTH-TOKEN"], "session-1")
+            self.assertEqual(cached["CSRF-TOKEN"], "csrf-1")
+
+    def test_ldap_login_uses_ldap_endpoint(self) -> None:
+        opener = FakeOpener([
+            {"success": False, "message": PUBLIC_KEY},
+            {"success": True, "data": {"sessionId": "ldap-session"}},
+        ])
+        client = MeterSphereClient("https://ms.example", opener=opener)
+
+        client.login("account", "password", authenticate="LDAP")
+
+        self.assertEqual(urlsplit(opener.requests[1].full_url).path, "/ldap/signin")
+        body = json.loads(opener.requests[1].data.decode("utf-8"))
+        self.assertEqual(body["authenticate"], "LDAP")
+
+    def test_auth_failure_automatically_logs_in_and_retries_once(self) -> None:
+        opener = FakeOpener([
+            {"success": False, "message": "401 UNAUTHORIZED"},
+            {"success": False, "message": PUBLIC_KEY},
+            {"success": True, "data": {"sessionId": "fresh-session"}},
+            {"success": True, "data": {"id": "p1"}},
+        ])
+        client = MeterSphereClient(
+            "https://ms.example",
+            {"X-AUTH-TOKEN": "expired"},
+            opener=opener,
+            username="account",
+            password="password",
+        )
+
+        self.assertEqual(client.get_plan("p1")["id"], "p1")
+        self.assertEqual(opener.requests[-1].headers["X-auth-token"], "fresh-session")
+
+    def test_missing_cache_automatically_logs_in_before_request(self) -> None:
+        opener = FakeOpener([
+            {"success": False, "message": PUBLIC_KEY},
+            {"success": True, "data": {"sessionId": "fresh-session"}},
+            {"success": True, "data": {"id": "p1"}},
+        ])
+        client = MeterSphereClient(
+            "https://ms.example", opener=opener, username="account", password="password"
+        )
+
+        self.assertEqual(client.get_plan("p1")["id"], "p1")
+        self.assertEqual([request.get_method() for request in opener.requests], ["GET", "POST", "GET"])
+
+    def test_saved_credentials_are_scoped_to_exact_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            credentials_path = Path(directory) / "credentials.json"
+            client = MeterSphereClient(
+                "https://ms.example", credentials_path=credentials_path
+            )
+            client.save_login_credentials("account", "password", "LDAP")
+
+            matching = MeterSphereClient.from_environment(
+                base_url="https://MS.EXAMPLE/",
+                environ={},
+                credentials_path=credentials_path,
+            )
+            other = MeterSphereClient.from_environment(
+                base_url="https://other.example",
+                environ={},
+                credentials_path=credentials_path,
+            )
+
+            self.assertEqual(
+                (matching._username, matching._password, matching._authenticate),
+                ("account", "password", "LDAP"),
+            )
+            self.assertEqual((other._username, other._password), (None, None))
+
+    def test_auth_cache_is_loaded_and_refreshed_after_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache_path = f"{directory}/auth.json"
+            with open(cache_path, "w", encoding="utf-8") as stream:
+                json.dump({"version": 2, "origins": {
+                    "https://ms.example": {"headers": {"X-AUTH-TOKEN": "cached"}},
+                    "https://other.example": {"headers": {"X-AUTH-TOKEN": "other"}},
+                }}, stream)
+            opener = FakeOpener([{"success": True, "data": {"id": "p1"}}])
+            client = MeterSphereClient.from_environment(
+                base_url="https://ms.example",
+                environ={"MS_AUTH_CACHE_FILE": cache_path},
+                opener=opener,
+                auth_cache_path=cache_path,
+            )
+            client.get_plan("p1")
+            self.assertEqual(opener.requests[0].headers["X-auth-token"], "cached")
+            with open(cache_path, encoding="utf-8") as stream:
+                payload = json.load(stream)
+                self.assertEqual(payload["origins"]["https://ms.example"]["headers"]["X-AUTH-TOKEN"], "cached")
+                self.assertEqual(payload["origins"]["https://other.example"]["headers"]["X-AUTH-TOKEN"], "other")
+
+    def test_auth_cache_is_not_loaded_for_another_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache_path = f"{directory}/auth.json"
+            with open(cache_path, "w", encoding="utf-8") as stream:
+                json.dump({"version": 2, "origins": {
+                    "https://ms.example": {"headers": {"X-AUTH-TOKEN": "cached"}},
+                }}, stream)
+            client = MeterSphereClient.from_environment(
+                base_url="https://other.example",
+                environ={"MS_AUTH_CACHE_FILE": cache_path},
+                auth_cache_path=cache_path,
+            )
+            self.assertNotIn("X-AUTH-TOKEN", client._headers)
+
+    def test_401_clears_auth_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache_path = f"{directory}/auth.json"
+            with open(cache_path, "w", encoding="utf-8") as stream:
+                json.dump({"version": 2, "origins": {
+                    "https://ms.example": {"headers": {"X-AUTH-TOKEN": "expired"}},
+                    "https://other.example": {"headers": {"X-AUTH-TOKEN": "other"}},
+                }}, stream)
+            client = MeterSphereClient(
+                "https://ms.example",
+                {"X-AUTH-TOKEN": "expired"},
+                opener=FakeOpener([FakeResponse({}, status=401)]),
+                auth_cache_path=cache_path,
+            )
+            with self.assertRaises(AuthenticationExpiredError):
+                client.get_plan("p1")
+            payload = json.loads(Path(cache_path).read_text(encoding="utf-8"))
+            self.assertNotIn("https://ms.example", payload["origins"])
+            self.assertIn("https://other.example", payload["origins"])
+
+    def test_auth_failure_envelope_clears_auth_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache_path = f"{directory}/auth.json"
+            with open(cache_path, "w", encoding="utf-8") as stream:
+                json.dump({"version": 2, "origins": {
+                    "https://ms.example": {"headers": {"X-AUTH-TOKEN": "expired"}},
+                }}, stream)
+            client = MeterSphereClient(
+                "https://ms.example",
+                {"X-AUTH-TOKEN": "expired"},
+                opener=FakeOpener([{"success": False, "message": "登录失效"}]),
+                auth_cache_path=cache_path,
+            )
+            with self.assertRaises(AuthenticationExpiredError):
+                client.get_plan("p1")
+            payload = json.loads(Path(cache_path).read_text(encoding="utf-8"))
+            self.assertNotIn("https://ms.example", payload["origins"])
+
     def test_parse_hash_plan_url(self) -> None:
         reference = parse_plan_reference(
             "https://intra-t-ms.exexm.com/#/track/plan/view/plan-123?projectId=project-456"
@@ -98,6 +280,87 @@ class MeterSphereApiTests(unittest.TestCase):
             [urlsplit(request.full_url).path for request in opener.requests],
             ["/track/case/node/list/plan/p1", "/track/test/case/comment/list/c1/PLAN"],
         )
+
+    def test_write_back_uses_single_case_and_comment_endpoints(self) -> None:
+        opener = FakeOpener([
+            {"success": True, "data": {"id": "pc-1"}},
+            {"success": True, "data": {"id": "comment-1"}},
+        ])
+        client = MeterSphereClient("https://ms.example", {"X-AUTH-TOKEN": "secret"}, opener=opener)
+        client.edit_plan_case({"id": "pc-1", "status": "Pass", "steps": []})
+        client.add_case_comment({"caseId": "c1", "description": "执行通过", "type": "PLAN"})
+        self.assertEqual([request.method for request in opener.requests], ["POST", "POST"])
+        self.assertEqual(
+            [urlsplit(request.full_url).path for request in opener.requests],
+            ["/track/test/plan/case/edit", "/track/test/case/comment/save"],
+        )
+        comment_body = json.loads(opener.requests[1].data.decode("utf-8"))
+        self.assertEqual(comment_body["description"], "执行通过")
+        self.assertEqual(comment_body["type"], "PLAN")
+
+    def test_update_case_by_number_verifies_status_and_comment(self) -> None:
+        opener = FakeOpener([
+            {"success": True, "data": {"list": [
+                {"id": "pc-1", "caseId": "c1", "num": 142560, "status": "Pass"},
+            ], "itemCount": 1, "pageCount": 1}},
+            {"success": True, "data": {"id": "pc-1", "caseId": "c1", "num": 142560, "status": "Pass"}},
+            {"success": True, "data": {"id": "comment-1"}},
+            {"success": True, "data": {
+                "id": "pc-1", "caseId": "c1", "num": 142560,
+                "status": "Prepare", "lastExecuteResult": "Prepare",
+            }},
+            {"success": True, "data": [{
+                "id": "comment-1", "caseId": "c1", "type": "PLAN",
+                "status": "Prepare", "description": "改为未执行",
+            }]},
+        ])
+        client = MeterSphereClient("https://ms.example", {"X-AUTH-TOKEN": "secret"}, opener=opener)
+
+        result = client.update_case_by_number(
+            "p1", "pr", "142560", "Prepare", "改为未执行"
+        )
+
+        self.assertEqual(result["status"], "Prepare")
+        self.assertTrue(result["commentVerified"])
+        self.assertTrue(result["updated"])
+        edit_body = json.loads(opener.requests[2].data.decode("utf-8"))
+        self.assertEqual(edit_body, {
+            "id": "pc-1", "caseId": "c1", "status": "Prepare", "comment": "改为未执行",
+        })
+
+    def test_update_case_by_number_is_idempotent_after_verified_write(self) -> None:
+        opener = FakeOpener([
+            {"success": True, "data": {"list": [
+                {"id": "pc-1", "caseId": "c1", "num": 142560, "status": "Prepare"},
+            ], "itemCount": 1, "pageCount": 1}},
+            {"success": True, "data": {
+                "id": "pc-1", "caseId": "c1", "num": 142560,
+                "status": "Prepare", "lastExecuteResult": "Prepare",
+            }},
+            {"success": True, "data": [{
+                "caseId": "c1", "type": "PLAN", "status": "Prepare",
+                "description": "改为未执行",
+            }]},
+        ])
+        client = MeterSphereClient("https://ms.example", {"X-AUTH-TOKEN": "secret"}, opener=opener)
+
+        result = client.update_case_by_number(
+            "p1", "pr", "142560", "Prepare", "改为未执行"
+        )
+
+        self.assertFalse(result["updated"])
+        self.assertEqual(len(opener.requests), 3)
+
+    def test_update_case_command_parses_plan_url(self) -> None:
+        args = _build_parser().parse_args([
+            "update-case",
+            "--plan-url", "https://ms.example/#/track/plan/view/p1?projectId=pr",
+            "--case-number", "142560",
+            "--status", "Prepare",
+            "--comment", "改为未执行",
+        ])
+        self.assertEqual(args.command, "update-case")
+        self.assertEqual(args.case_number, "142560")
 
     def test_query_reads_all_pages_and_filters_locally(self) -> None:
         pages = [
