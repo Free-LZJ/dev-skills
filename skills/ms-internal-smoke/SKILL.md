@@ -1,11 +1,61 @@
 ---
 name: ms-internal-smoke
-description: Execute internal MeterSphere smoke plans with API-first discovery, cached authentication, verified result/comment write-back, and browser-based business UI testing when required.
+description: Execute internal MeterSphere smoke plans, including guided first-run input collection, API-first discovery, cached authentication, verified result/comment write-back, and browser-based business UI testing.
 ---
 
 # Internal MS Smoke Test
 
 Execute only the requested MeterSphere test-plan cases. Use the API client for MeterSphere plan management and the Codex in-app browser only for business UI execution or authentication recovery that the API cannot complete. Keep plan-level environment blocks separate from individual case results.
+
+## Quick Start
+
+The requester normally uses this skill through natural language and does not need to
+run the Python client. For a first run, accept this prompt shape:
+
+```text
+请使用 ms-internal-smoke，先做只读预检：
+- MeterSphere 计划 URL：<URL>
+- 目标项目 / 仓库路径：<本次测试所属项目>
+- 业务页面 URL：<URL>
+- 用例名称包含：<名称短语>
+- 执行结果筛选：未执行
+- 环境 / 租户：<环境和租户>
+- 权限用例策略：未配置权限的用例跳过
+- 报告文档路径：<可选；未提供时按默认规则创建>
+```
+
+- `只读预检` authorizes only authentication, plan/case reads, filter/count validation,
+  and scope reporting. It does not authorize business-data creation or MeterSphere
+  result/comment writes.
+- `执行` or `开始测试` authorizes the confirmed selected set under the execution
+  boundary below. If execution was requested in the initial prompt, continue after a
+  successful preflight without asking for a second confirmation.
+- If only the plan URL is supplied, parse it immediately, resolve values already
+  available from the explicitly named target repository and exact supplied business
+  page, then ask one consolidated question for the missing target repository, business
+  URL, name/result filter, environment/tenant, and permission policy. Do not reuse
+  values from unrelated repositories, browser tabs, or memory, and do not ask for the
+  missing values one at a time.
+- Reuse an explicitly supplied report path. Otherwise reuse the matching existing
+  test-plan/smoke-report document; if none exists, reserve
+  `test-governance/reports/YYYY-MM-DD-<plan-name-or-planId>-metersphere-smoke.md` in
+  the target repository, using a filesystem-safe plan name when available. Report that
+  path during preflight and create it only when execution is authorized.
+- After preflight, report the plan identity, filters, confirmed count, business URL,
+  environment/tenant, permission policy, report path, authentication state, and the
+  next action or concrete environment block.
+
+For first-time authentication, use the origin-scoped auth cache first. If it is absent,
+request only the username and `LOCAL`/`LDAP` type, open an interactive terminal, run the
+`login` command below, and have the requester enter the password only at its hidden
+prompt. Never ask for a password, token, cookie, or browser storage value in chat or a
+command argument. A non-interactive session without saved credentials or a documented
+secure `MS_*` source is a plan-level environment block. Do not persist credentials
+unless the requester explicitly opts in.
+
+After the first successful login or API read, reuse the platform base URL cached by the
+client. Explicit `--plan-url`, `--base-url`, or `MS_BASE_URL` always overrides it; a
+plan URL or plan ID is still required to identify the requested plan.
 
 ## Mode Selection
 
@@ -19,6 +69,14 @@ Execute only the requested MeterSphere test-plan cases. Use the API client for M
 Use the bundled `scripts/metersphere_api.py` client for plan/case inventory and
 explicit single-case result write-back. It does not replace the browser for
 business execution, screenshots, or visual state verification.
+
+Resolve bundled script paths from the directory containing this `SKILL.md`, not from
+the target application's working directory. PowerShell examples below assume:
+
+```powershell
+$skillRoot = '<directory containing ms-internal-smoke\SKILL.md>'
+$client = Join-Path $skillRoot 'scripts\metersphere_api.py'
+```
 
 The client currently targets the endpoints observed in the signed-in plan page:
 
@@ -38,9 +96,9 @@ Example read-only commands (PowerShell):
 
 ```powershell
 $plan = 'https://intra-t-ms.exexm.com/#/track/plan/view/c9b9a38b-0e9d-4870-a541-a13992c97f07?projectId=22b75423-85b9-11ee-89bb-02bfeb65d93b'
-python scripts/metersphere_api.py list --plan-url $plan --page-size 100
-python scripts/metersphere_api.py list --plan-url $plan --name-contains '列表' --execution-status Prepare
-python scripts/metersphere_api.py detail --plan-url $plan --plan-case-id <stable-plan-case-id>
+python $client list --plan-url $plan --page-size 100
+python $client list --plan-url $plan --name-contains '列表' --execution-status Prepare
+python $client detail --plan-url $plan --plan-case-id <stable-plan-case-id>
 ```
 
 For normal single-case changes, use the atomic command. It locates one exact case
@@ -48,7 +106,7 @@ number in the URL's plan, reads its detail, sends a selective update, then verif
 both persisted result fields and the PLAN comment:
 
 ```powershell
-python scripts/metersphere_api.py update-case --plan-url $plan --case-number 142560 --status Prepare --comment '该用例在ms测试过程中被改为未执行'
+python $client update-case --plan-url $plan --case-number 142560 --status Prepare --comment '该用例在ms测试过程中被改为未执行'
 ```
 
 After a case has been executed and classified, send only the fields required by
@@ -58,8 +116,8 @@ transaction. Use `edit-case` only for a confirmed payload contract. Use `add-com
 with `caseId`, `description`, and optional `type` only for a separate comment write:
 
 ```powershell
-python scripts/metersphere_api.py edit-case --payload-file .\artifacts\plan-case-update.json
-python scripts/metersphere_api.py add-comment --payload-file .\artifacts\case-comment.json
+python $client edit-case --payload-file .\artifacts\plan-case-update.json
+python $client add-comment --payload-file .\artifacts\case-comment.json
 ```
 
 The write endpoints are `POST /track/test/plan/case/edit` and
@@ -79,8 +137,9 @@ expected results, and per-step execution data without scraping rendered HTML.
 Supply authentication through the documented `MS_*` environment variables or the
 local cache at `%LOCALAPPDATA%/Codex/ms-internal-smoke/ms-internal-smoke-auth.json`
 (override with `MS_AUTH_CACHE_FILE`). The client writes only `Authorization`/`X-AUTH-TOKEN` API auth headers after
-a successful authorized response and never stores passwords, browser cookies, or
-session stores. An explicitly transient `--header` is allowed for debugging.
+a successful authorized response, records the most recently successful MeterSphere
+base URL in the same cache, and never stores passwords, browser cookies, or session
+stores. An explicitly transient `--header` is allowed for debugging.
 Use `MS_X_AUTH_TOKEN`, `MS_CSRF_TOKEN`, `MS_PROJECT_ID`, and `MS_WORKSPACE_ID` for
 the observed deployment; `MS_BASE_URL`, `MS_AUTHORIZATION`, and `MS_COOKIE` are
 optional fallbacks for deployments that explicitly expose those authentication modes.
@@ -93,7 +152,7 @@ the returned `X-AUTH-TOKEN` and `CSRF-TOKEN`; it never stores the password. A ma
 hidden-prompt refresh is also available:
 
 ```powershell
-python scripts/metersphere_api.py login --base-url https://intra-t-ms.exexm.com --username <ACCOUNT> --authenticate LDAP
+python $client login --base-url https://intra-t-ms.exexm.com --username <ACCOUNT> --authenticate LDAP
 ```
 
 When explicitly requested, add `--save-credentials` to store the username and
@@ -103,18 +162,19 @@ The file is outside the Git repository. Failed credentials are not cached.
 
 The auth-header cache is also keyed by exact origin. Use its cached header first, then
 environment/explicit headers as overrides. A 401 first attempts the saved LOCAL or LDAP
-login refresh and retries the interrupted request once. When process credentials are unavailable, recover in the current browser: open
-the MS page, let the remembered account/password autofill, click 登录, verify the
-post-login page, perform the supported auth handoff, and retry. This recovery is part of the original test request;
-do not pause for per-case confirmation. An unauthenticated response after recovery
-is a plan-level environment block; do not guess requests or treat partial data as valid.
+login refresh and retries the interrupted request once. When direct login is unavailable
+or rejected, the current browser may restore the visible MeterSphere login through
+remembered autofill, but a signed-in browser page does not itself authenticate the API
+client. Retry the API only when the environment exposes a supported auth handoff;
+otherwise report unresolved API authentication as a plan-level environment block.
+Never inspect or copy browser storage, cookies, or tokens to bridge the two sessions.
 
 ## Input Contract
 
 Resolve or request:
 
-- MS plan URL, local application URL, and the requested name phrase.
-- Required execution result filter, for example `未执行` or excluding `通过` and `跳过`.
+- Resolve the Quick Start fields from the request and current workspace, then ask one
+  consolidated question for any required values that remain missing.
 - Current environment and tenant. Treat an explicit request to execute the selected cases as one-time authorization for the whole selected set: create and retain the minimum missing test data, use the current signed-in account, execute the visible UI flow, write both MeterSphere result fields, and add the required non-passing comments. Do not request per-case or per-action confirmation for these in-scope test operations.
 - Permission policy. When the requester says permissions are not configured, permission cases are `跳过`.
 
@@ -136,7 +196,7 @@ Resolve or request:
 ### 2. Materialize the complete execution checklist
 
 Before reading the first case detail or executing any case, initialize the
-execution-checklist section in the project's test-plan or smoke-report document.
+execution-checklist section in the report resolved by the Quick Start path rule.
 Create the document or section only when absent. If it already contains incremental
 or completed entries, preserve them and reconcile the remaining API result into one
 complete checklist. Populate every case in stable API order; never append a case only
@@ -199,6 +259,20 @@ are marked `进行中`, reconcile each against MeterSphere before choosing one t
 - Identify permission cases from title or steps mentioning permission, role, authorization, unauthorized access, or permission-controlled controls. When permissions are intentionally unconfigured, set `跳过` directly; never invent permission codes or modify roles.
 
 ### 5. Classify and write the result
+
+Keep checklist state separate from the MeterSphere API value:
+
+| Checklist state | MeterSphere status |
+|---|---|
+| `待执行` | `Prepare` |
+| `通过` | `Pass` |
+| `失败` | `Failure` |
+| `阻塞` | `Blocking` |
+| `跳过` | `Skip` |
+
+`进行中` is checklist-only and must never be written as a MeterSphere status. If a
+deployment exposes different values, confirm its current UI/API contract before
+writing; never guess or silently translate an unknown value.
 
 - Correct functional behavior: set both the plan item and case execution result to `通过`.
 - Feature incomplete or an unrecoverable non-data prerequisite: set `阻塞`.

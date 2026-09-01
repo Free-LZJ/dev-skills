@@ -34,6 +34,11 @@ DEFAULT_AUTH_CACHE_NAME = "ms-internal-smoke-auth.json"
 DEFAULT_CREDENTIALS_NAME = "credentials.json"
 AUTHENTICATE_ENDPOINTS = {"LOCAL": "/signin", "LDAP": "/ldap/signin"}
 PLAN_ID_PATTERN = re.compile(r"(?:^|/)plan/view/([^/?#]+)")
+LOGIN_RECOVERY_HINT = (
+    "run login --base-url <origin> --username <account> --authenticate LOCAL|LDAP "
+    "in an interactive terminal, or pass documented MS_* variables; browser login "
+    "alone cannot authenticate this API client"
+)
 
 # These are the headers injected by the authenticated MeterSphere web client.
 # Authorization/Cookie are also accepted for deployments exposing a token or
@@ -477,6 +482,16 @@ def _load_auth_cache_document(path: Path | None) -> Any:
         return {}
 
 
+def _load_cached_base_url(path: Path | None) -> str | None:
+    payload = _load_auth_cache_document(path)
+    value = payload.get("lastBaseUrl") if isinstance(payload, Mapping) else None
+    if not isinstance(value, str):
+        return None
+    value = value.strip().rstrip("/")
+    parsed = urlsplit(value)
+    return value if parsed.scheme in {"http", "https"} and parsed.netloc else None
+
+
 def _save_login_credentials(
     path: Path, base_url: str, username: str, password: str, authenticate: str
 ) -> None:
@@ -565,14 +580,20 @@ class MeterSphereClient:
         """
 
         env = environ if environ is not None else os.environ
-        resolved_base_url = base_url or env.get("MS_BASE_URL")
-        if not resolved_base_url:
-            raise ValueError("base URL is required (argument or MS_BASE_URL)")
-        headers = _load_auth_cache(
-            Path(auth_cache_path)
+        auth_cache_path_value = (
+            Path(os.fspath(auth_cache_path))
             if auth_cache_path
-            else _default_auth_cache_path(env),
-            resolved_base_url,
+            else _default_auth_cache_path(env)
+        )
+        resolved_base_url = (
+            base_url or env.get("MS_BASE_URL") or _load_cached_base_url(auth_cache_path_value)
+        )
+        if not resolved_base_url:
+            raise ValueError(
+                "base URL is required once (use --base-url, --plan-url, or MS_BASE_URL)"
+            )
+        headers = _load_auth_cache(
+            auth_cache_path_value, resolved_base_url,
         )
         headers.update({
             header_name: env[env_name]
@@ -593,7 +614,7 @@ class MeterSphereClient:
             headers=headers,
             timeout=timeout,
             opener=opener,
-            auth_cache_path=auth_cache_path or _default_auth_cache_path(env),
+            auth_cache_path=auth_cache_path_value,
             credentials_path=credentials_path_value,
             username=env.get("MS_USERNAME") or env.get("MS_USER") or cached_username,
             password=env.get("MS_PASSWORD") or env.get("MS_PASS") or cached_password,
@@ -961,7 +982,7 @@ class MeterSphereClient:
             if allow_refresh and self._refresh_auth():
                 return self._request_json(method, path, body, allow_refresh=False)
             raise AuthenticationError(
-                "no explicit authentication header supplied; pass --header or MS_* variables"
+                f"no API authentication available; {LOGIN_RECOVERY_HINT}"
             )
         url = f"{self.base_url}/{path.lstrip('/')}"
         encoded_body = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
@@ -981,7 +1002,7 @@ class MeterSphereClient:
                 if allow_refresh and self._refresh_auth():
                     return self._request_json(method, path, body, allow_refresh=False)
                 raise AuthenticationExpiredError(
-                    "MeterSphere authentication expired; complete browser login and retry"
+                    f"MeterSphere authentication expired; {LOGIN_RECOVERY_HINT}"
                 ) from None
             raise MeterSphereError(f"MeterSphere HTTP {error.code} for {method} {path}: {message}") from None
         except URLError as error:
@@ -996,7 +1017,7 @@ class MeterSphereClient:
                 if allow_refresh and self._refresh_auth():
                     return self._request_json(method, path, body, allow_refresh=False)
                 raise AuthenticationExpiredError(
-                    "MeterSphere authentication expired; complete browser login and retry"
+                    f"MeterSphere authentication expired; {LOGIN_RECOVERY_HINT}"
                 )
             raise MeterSphereError(f"MeterSphere HTTP {status} for {method} {path}")
         try:
@@ -1012,7 +1033,7 @@ class MeterSphereClient:
                     if allow_refresh and self._refresh_auth():
                         return self._request_json(method, path, body, allow_refresh=False)
                     raise AuthenticationExpiredError(
-                        "MeterSphere authentication expired; complete browser login and retry"
+                        f"MeterSphere authentication expired; {LOGIN_RECOVERY_HINT}"
                     )
             self._save_auth_cache()
             return payload
@@ -1036,7 +1057,9 @@ class MeterSphereClient:
         if not isinstance(origins, dict):
             origins = {}
         origins[_credential_origin(self.base_url)] = {"headers": auth_headers}
-        payload = {"version": 2, "origins": origins}
+        payload["version"] = 2
+        payload["lastBaseUrl"] = self.base_url
+        payload["origins"] = origins
         self._auth_cache_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._auth_cache_path.with_suffix(".tmp")
         temporary.write_text(
@@ -1053,8 +1076,11 @@ class MeterSphereClient:
         if not isinstance(origins, dict):
             return
         origins.pop(_credential_origin(self.base_url), None)
+        payload["version"] = 2
+        payload.setdefault("lastBaseUrl", self.base_url)
+        payload["origins"] = origins
         self._auth_cache_path.write_text(
-            json.dumps({"version": 2, "origins": origins}, ensure_ascii=False),
+            json.dumps(payload, ensure_ascii=False),
             encoding="utf-8",
         )
 
@@ -1135,8 +1161,6 @@ def _make_client(args: argparse.Namespace) -> tuple[MeterSphereClient, PlanRefer
     plan_reference = parse_plan_reference(plan_url) if plan_url else None
     base_url_argument = getattr(args, "_sub_base_url", None) or args.base_url
     base_url = base_url_argument or (plan_reference.base_url if plan_reference else None) or os.environ.get("MS_BASE_URL")
-    if not base_url:
-        raise ValueError("base URL is required (use --base-url, --plan-url, or MS_BASE_URL)")
     timeout = getattr(args, "_sub_timeout", None)
     client = MeterSphereClient.from_environment(
         base_url=base_url,
@@ -1157,7 +1181,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "--base-url",
             dest="_sub_base_url" if suppress_defaults else "base_url",
             default=default,
-            help="MeterSphere origin, or use MS_BASE_URL",
+            help="MeterSphere origin; explicit value overrides the last successful cached origin",
         )
         target.add_argument(
             "--plan-url",

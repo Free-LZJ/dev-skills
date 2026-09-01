@@ -9,6 +9,7 @@ single-case result and comment write-back without live side effects.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from dataclasses import dataclass
@@ -186,14 +187,38 @@ class MeterSphereApiTests(unittest.TestCase):
             self.assertEqual(opener.requests[0].headers["X-auth-token"], "cached")
             with open(cache_path, encoding="utf-8") as stream:
                 payload = json.load(stream)
+                self.assertEqual(payload["lastBaseUrl"], "https://ms.example")
                 self.assertEqual(payload["origins"]["https://ms.example"]["headers"]["X-AUTH-TOKEN"], "cached")
                 self.assertEqual(payload["origins"]["https://other.example"]["headers"]["X-AUTH-TOKEN"], "other")
+
+    def test_make_client_reuses_cached_base_url_when_omitted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache_path = Path(directory) / "auth.json"
+            cache_path.write_text(json.dumps({
+                "version": 2,
+                "lastBaseUrl": "https://ms.example",
+                "origins": {
+                    "https://ms.example": {"headers": {"X-AUTH-TOKEN": "cached"}},
+                },
+            }), encoding="utf-8")
+            args = _build_parser().parse_args(["plan", "--plan-id", "p1"])
+
+            with patch.dict(
+                os.environ,
+                {"MS_AUTH_CACHE_FILE": str(cache_path), "MS_BASE_URL": ""},
+                clear=False,
+            ):
+                client, reference = _make_client(args)
+
+            self.assertEqual(client.base_url, "https://ms.example")
+            self.assertEqual(client._headers["X-AUTH-TOKEN"], "cached")
+            self.assertIsNone(reference)
 
     def test_auth_cache_is_not_loaded_for_another_origin(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cache_path = f"{directory}/auth.json"
             with open(cache_path, "w", encoding="utf-8") as stream:
-                json.dump({"version": 2, "origins": {
+                json.dump({"version": 2, "lastBaseUrl": "https://ms.example", "origins": {
                     "https://ms.example": {"headers": {"X-AUTH-TOKEN": "cached"}},
                 }}, stream)
             client = MeterSphereClient.from_environment(
@@ -217,9 +242,14 @@ class MeterSphereApiTests(unittest.TestCase):
                 opener=FakeOpener([FakeResponse({}, status=401)]),
                 auth_cache_path=cache_path,
             )
-            with self.assertRaises(AuthenticationExpiredError):
+            with self.assertRaises(AuthenticationExpiredError) as context:
                 client.get_plan("p1")
+            message = str(context.exception)
+            self.assertIn("login --base-url", message)
+            self.assertIn("browser login alone cannot authenticate", message)
+            self.assertNotIn("complete browser login and retry", message)
             payload = json.loads(Path(cache_path).read_text(encoding="utf-8"))
+            self.assertEqual(payload["lastBaseUrl"], "https://ms.example")
             self.assertNotIn("https://ms.example", payload["origins"])
             self.assertIn("https://other.example", payload["origins"])
 
@@ -505,7 +535,9 @@ class MeterSphereApiTests(unittest.TestCase):
         client = MeterSphereClient("https://ms.example", opener=FakeOpener([]))
         with self.assertRaises(AuthenticationError) as context:
             client.get_plan("p1")
-        self.assertNotIn("secret", str(context.exception))
+        message = str(context.exception)
+        self.assertIn("login --base-url", message)
+        self.assertNotIn("secret", message)
 
     def test_error_envelope_does_not_echo_explicit_token(self) -> None:
         opener = FakeOpener([
