@@ -35,6 +35,7 @@ try:
         PaginationError,
         _build_parser,
         _make_client,
+        _resolve_plan_project_id,
         parse_plan_reference,
     )
 except ImportError:  # Direct execution from the scripts directory.
@@ -46,6 +47,7 @@ except ImportError:  # Direct execution from the scripts directory.
         PaginationError,
         _build_parser,
         _make_client,
+        _resolve_plan_project_id,
         parse_plan_reference,
     )
 
@@ -73,6 +75,29 @@ class FakeOpener:
 
 
 class MeterSphereApiTests(unittest.TestCase):
+    def test_plan_project_id_is_resolved_from_plan_metadata(self) -> None:
+        client = MeterSphereClient(
+            "https://ms.example",
+            {"X-AUTH-TOKEN": "secret"},
+            opener=FakeOpener([{"success": True, "data": {"id": "p1", "projectId": "project-1"}}]),
+        )
+        reference = parse_plan_reference("https://ms.example/#/track/plan/view/p1")
+
+        project_id, _ = _resolve_plan_project_id(client, reference, None)
+
+        self.assertEqual(project_id, "project-1")
+
+    def test_plan_project_id_mismatch_fails_before_case_list(self) -> None:
+        client = MeterSphereClient(
+            "https://ms.example",
+            {"X-AUTH-TOKEN": "secret"},
+            opener=FakeOpener([{"success": True, "data": {"id": "p1", "projectId": "project-1"}}]),
+        )
+        reference = parse_plan_reference("https://ms.example/#/track/plan/view/p1")
+
+        with self.assertRaisesRegex(ValueError, "does not match plan projectId"):
+            _resolve_plan_project_id(client, reference, "workspace-1")
+
     def test_login_encrypts_credentials_and_refreshes_cache(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cache_path = Path(directory) / "auth.json"

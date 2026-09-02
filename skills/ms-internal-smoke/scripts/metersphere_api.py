@@ -1154,6 +1154,25 @@ def _load_json_argument(value: str | None, file_path: str | None, label: str) ->
     return None
 
 
+def _resolve_plan_project_id(
+    client: MeterSphereClient,
+    reference: PlanReference | None,
+    explicit_project_id: str | None,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Resolve the project scope and reject workspace/project ID mix-ups."""
+    if not reference:
+        return explicit_project_id, None
+    plan = client.get_plan(reference.plan_id)
+    plan_project_id = _first_value(plan, "projectId", "project_id")
+    if plan_project_id is not None:
+        plan_project_id = str(plan_project_id).strip() or None
+    if explicit_project_id and plan_project_id and explicit_project_id != plan_project_id:
+        raise ValueError(
+            f"project ID {explicit_project_id} does not match plan projectId {plan_project_id}"
+        )
+    return explicit_project_id or plan_project_id, plan
+
+
 def _make_client(args: argparse.Namespace) -> tuple[MeterSphereClient, PlanReference | None]:
     header_arguments = [*args.header, *getattr(args, "_sub_header", [])]
     headers = _parse_header_arguments(header_arguments)
@@ -1284,13 +1303,22 @@ def _build_parser() -> argparse.ArgumentParser:
 def _run_cli(args: argparse.Namespace) -> Any:
     client, reference = _make_client(args)
     if args.command == "login":
-        username = args.username or os.environ.get("MS_USERNAME") or os.environ.get("MS_USER")
+        username = (
+            args.username
+            or os.environ.get("MS_USERNAME")
+            or os.environ.get("MS_USER")
+            or client._username
+        )
         if not username:
             raise ValueError("MeterSphere username is required (use --username or MS_USERNAME)")
         if args.password_stdin:
             password = sys.stdin.readline().rstrip("\r\n")
         else:
-            password = os.environ.get("MS_PASSWORD") or os.environ.get("MS_PASS")
+            password = (
+                os.environ.get("MS_PASSWORD")
+                or os.environ.get("MS_PASS")
+                or client._password
+            )
             if not password and sys.stdin.isatty():
                 password = getpass.getpass("MeterSphere password: ")
         if not password:
@@ -1332,7 +1360,8 @@ def _run_cli(args: argparse.Namespace) -> Any:
         return client.edit_plan_case(payload) if args.command == "edit-case" else client.add_case_comment(payload)
     if args.command == "update-case":
         plan_id = args.plan_id or (reference.plan_id if reference else None)
-        project_id = args.project_id or (reference.project_id if reference else None) or os.environ.get("MS_PROJECT_ID")
+        explicit_project_id = args.project_id or (reference.project_id if reference else None) or os.environ.get("MS_PROJECT_ID")
+        project_id, _ = _resolve_plan_project_id(client, reference, explicit_project_id)
         if not plan_id or not project_id:
             raise ValueError("update-case requires planId and projectId from --plan-url or explicit options")
         return client.update_case_by_number(
@@ -1340,11 +1369,12 @@ def _run_cli(args: argparse.Namespace) -> Any:
         )
 
     plan_id = args.plan_id or (reference.plan_id if reference else None)
-    project_id = (
+    explicit_project_id = (
         args.project_id
         or (reference.project_id if reference else None)
         or os.environ.get("MS_PROJECT_ID")
     )
+    project_id, _ = _resolve_plan_project_id(client, reference, explicit_project_id)
     if not plan_id:
         raise ValueError("plan ID is required (use --plan-id or --plan-url)")
     if not project_id:
