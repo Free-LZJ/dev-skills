@@ -1,4 +1,0 @@
-interface:
-  display_name: "Brainstorming"
-  short_description: "Clarify material choices before implementation"
-  default_prompt: "Use $brainstorming to resolve only the material unknowns in this request, then recommend the smallest executable design."
