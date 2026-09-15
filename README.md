@@ -90,33 +90,13 @@ dev-skills/
 
 ### requirements-delivery
 
-从需求文档启动可重复的交付工作流，生成系统分析、开发清单、测试计划，保持文档与代码同步。
+用最轻流程把复杂需求转成可恢复、可验证的交付结果；系统分析聚焦事实与决策，详细设计必须能直接指导代码实现。
 
 **核心特性：**
-- 三文件工作集：`系统分析.md`、`开发清单.md`、`测试计划.md`
-- 支持用户修订分析文档并同步到下游任务
-- Task 状态追踪、Bug 修复记录、变更记录
-- 可与 [superpowers](https://github.com/obra/superpowers) 集成，获得 brainstorming、writing-plans、systematic-debugging 等能力
-
-**交互命令：**
-| 命令 | 用途 |
-|------|------|
-| `/analyze <需求来源>` | 启动新的系统分析 |
-| `/analyze <需求来源> --superpowers` | 使用 superpowers 能力辅助分析 |
-| `/sync` | 同步代码状态到工作文档 |
-| `/tasks` | 查看当前 Task 清单 |
-| `/bug <Task编号> <描述>` | 记录 Bug |
-
-**superpowers 集成：**
-首次使用 `--superpowers`、`--brainstorm` 或 `--plan` 时，会检查 superpowers 是否已安装。如未安装，会提示用户通过以下方式安装：
-- Claude Code: `/plugin install superpowers@claude-plugins-official`
-- Cursor: `/add-plugin superpowers`
-- Gemini CLI: `gemini extensions install https://github.com/obra/superpowers`
-
-**Windows 检查脚本说明：**
-- 优先使用 `cmd /c skills\\requirements-delivery\\scripts\\check-superpowers.cmd`
-- `check-superpowers.ps1` 仅建议在当前 PowerShell 会话直接执行，或通过 `pwsh -File` 调用
-- 避免使用嵌套 `powershell.exe -File ...`，部分环境会在脚本启动前报 managed host loading error
+- 轻量、跟踪、设计、Super 四级流程
+- 系统分析只记录目标、事实、差异、结论和验收
+- 详细设计必须写入口、修改位置、调用链、数据、伪代码和验证
+- Task 状态按业务结果追踪，文档按需创建
 
 ### epaas-open-target
 
