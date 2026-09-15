@@ -36,6 +36,15 @@ BEFORE claiming any status or expressing satisfaction:
 
 Skip any step = lying, not verifying
 
+### Pending-decision gate
+
+Before claiming completion, committing, or calling a task complete, inspect the
+current system-analysis decision table and development checklist. If any item
+is `待确认`, `阻断`, or `需复核`, the completion gate fails: ask the user for
+the unresolved decision, keep dependent work open, and report only independent
+work that has evidence. A recommendation or reversible implementation detail
+does not close a user decision.
+
 ### Fresh verification boundary
 
 Run the relevant verification once after the last related code change, and match it to the declared Task scope. Do not rerun the same full build when no related code changed. Intermediate status updates, exploration, and partial checks are not completion claims; a Task gets at most one final audit.
