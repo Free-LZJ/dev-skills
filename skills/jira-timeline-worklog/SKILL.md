@@ -1,6 +1,6 @@
 ---
 name: jira-timeline-worklog
-description: Reconstruct daily Beijing-time work timelines and Jira worklog recommendations from Codex sessions, Git history, Jira issues, and raw worklogs. Use when asked to整理某天/某周时间线、生成 Jira 填报指南、核对已登记工时、归属后补子任务、登记工时或设置 Tempo 事务类型。
+description: Reconstruct daily Beijing-time work timelines and Jira worklog recommendations from Codex sessions, DSH sessions, Git history, Jira issues, and raw worklogs. Use when asked to整理某天/某周时间线、生成 Jira 填报指南、核对已登记工时、归属后补子任务、登记工时或设置 Tempo 事务类型。
 ---
 
 # Jira Timeline Worklog
@@ -14,10 +14,12 @@ Reconstruct actual work from evidence, then produce a concise Chinese report in 
 1. Read `jira-integration/SKILL.md` before any Jira query or write.
 2. Determine the requested calendar date in `Asia/Shanghai`; convert session timestamps to Beijing time before grouping.
 3. Scan all Codex session JSONL under the date and adjacent date directories. Include cross-directory sessions and split overnight sessions at local midnight.
-4. Extract user requests, assistant actions, conclusions, verification, and actual time windows. Treat repeated child agents and repeated summaries as evidence of the same work unless they contain distinct business scope.
-5. Scan every relevant repository for the user's Git identity. Compare author time and committer time. Use commit content as delivery evidence, never as automatic additional hours. Deduplicate rebases, cherry-picks, equivalent SHAs, and submit/push bookkeeping.
-6. Query Jira raw worklogs for the user and date. Treat existing hours as facts only; derive recommendations from evidence. When embedded worklogs conflict with totals, paginate per-issue worklogs and filter by author plus `started[:10]`.
-7. Query parent/child relationships and issue links. Ignore Jira creation date when the user says tasks were added later; map a later-created item to earlier work only when title, code, session, or issue description supports it.
+4. Scan DSH session indexes and logs for the same date. Read `%USERPROFILE%\\.dsh\\storages\\session_projcache\\sessions\\*.json` for session metadata, including `identity.createdAt`, `identity.cwd`, title, and session statistics. Resolve event logs under `%USERPROFILE%\\.dsh\\sessions\\--<encoded cwd>--\\<session-id>\\`.
+5. Treat `session.jsonl`, `session.vN.jsonl`, and `.jsonl.zstd` as different storage generations. Do not parse `.jsonl.zstd` as plain text; use the DSH persistence/export/backend decoder or a supported Node Zstandard decoder. If only the header index is available, use it as metadata evidence and do not invent event-level times.
+6. Extract user requests, assistant actions, conclusions, verification, and actual time windows from both Codex and DSH. Normalize all timestamps to Beijing time. Treat repeated child agents, imported/replayed sessions, and repeated summaries as evidence of the same work unless they contain distinct business scope.
+7. Scan every relevant repository for the user's Git identity. Compare author time and committer time. Use commit content as delivery evidence, never as automatic additional hours. Deduplicate rebases, cherry-picks, equivalent SHAs, and submit/push bookkeeping.
+8. Query Jira raw worklogs for the user and date. Treat existing hours as facts only; derive recommendations from evidence. When embedded worklogs conflict with totals, paginate per-issue worklogs and filter by author plus `started[:10]`.
+9. Query parent/child relationships and issue links. Ignore Jira creation date when the user says tasks were added later; map a later-created item to earlier work only when title, code, session, or issue description supports it.
 
 ## Timeline Rules
 
