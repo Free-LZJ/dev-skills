@@ -7,6 +7,8 @@
 | Skill | 说明 |
 |-------|------|
 | **skill-installer** | Skills 安装器，将本地 Git 仓库中的 skills 通过符号链接安装到 `~/.agents/skills`，自动同步到多个 AI 编程工具 |
+| **local-acceptance** | 本地实测验收：改完代码必须在真实运行的应用上按用户路径操作才允许判通过；单测、编译、lint 通过都不算验收 |
+| **jira-bugfix** | Jira 缺陷修复流程（源自 `org-develop/team-ai`）：判定项目与仓库（缺则从 GitLab 克隆）→ 默认在仓库根同步 `develop`，只有同一仓库多会话并行时才建工单工作树 `<repo>/.agents/worktrees/<单号>` → 修复 → 本地实测验收 → 按「主工单 子工单」提交 → 确认后合入 develop |
 | **requirements-delivery** | 需求交付工作流，从需求文档启动可重复的开发流程，生成系统分析、开发清单、测试计划，并保持文档与代码同步 |
 | **epaas-open-target** | ePaaS 开放对象开发指南，覆盖开放对象接入、权限判断、同步过账、Hook 通知和 SQL 查询 |
 | **html2vue** | HTML 原型高保真 Vue 开发约束，要求复用原 DOM/class/CSS 并通过浏览器视觉检查确保页面一致 |
